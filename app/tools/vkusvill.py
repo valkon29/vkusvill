@@ -11,6 +11,7 @@ LLM могла извиниться и предложить альтернати
 import asyncio
 import json
 import logging
+import re
 
 from app.config import settings
 from app.events import Emit
@@ -244,19 +245,59 @@ async def find_shops(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
     return _clip(json.dumps(shops, ensure_ascii=False))
 
 
-async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
-    products = args.get("products") or []
-    if not 1 <= len(products) <= 20:
-        return "TOOL_ERROR: в корзине должно быть от 1 до 20 позиций"
+def _clamp_q(q: float) -> float:
+    return round(min(40.0, max(0.01, float(q))), 2)
 
-    # дедупликация по id, количества суммируются и ограничиваются 0.01..40
-    merged: dict[int, float] = {}
+
+_CART_BLOCK_RE = re.compile(r"\[В корзине:[^\]]*\]")
+_CART_ITEM_RE = re.compile(r"id=(\d+)[^;]*?×\s*([\d.]+)")
+
+
+def current_cart_from_history(messages: list[dict]) -> list[dict]:
+    """Текущая корзина из служебного блока [В корзине: …] в истории.
+
+    Блок дописывает фронтенд после события cart — LLM и код видят один состав.
+    """
+    for msg in reversed(messages):
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        block = _CART_BLOCK_RE.search(content)
+        if block:
+            return [
+                {"id": int(m.group(1)), "quantity": float(m.group(2))}
+                for m in _CART_ITEM_RE.finditer(block.group(0))
+            ]
+    return []
+
+
+async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
+    # _current_cart подставляет агент из блока [В корзине: …] — текущий состав
+    current = args.pop("_current_cart", None) or []
+    replace = bool(args.get("replace"))
+    products = args.get("products") or []
+
+    # позиции запроса: дубликаты суммируются
+    new_items: dict[int, float] = {}
     for p in products:
         pid = int(p.get("id") or 0)
         if pid <= 0:
             return f"TOOL_ERROR: некорректный id товара {p.get('id')!r}"
-        q = float(p.get("quantity") or 1)
-        merged[pid] = round(min(40.0, merged.get(pid, 0.0) + max(0.01, q)), 2)
+        new_items[pid] = round(min(40.0, new_items.get(pid, 0.0) + _clamp_q(p.get("quantity") or 1)), 2)
+
+    # без replace объединяем с текущей корзиной; новое количество затирает старое
+    merged: dict[int, float] = (
+        {}
+        if replace
+        else {
+            int(c["id"]): _clamp_q(c.get("quantity") or 1)
+            for c in current
+            if int(c.get("id") or 0) > 0
+        }
+    )
+    merged.update(new_items)
+    if not 1 <= len(merged) <= 20:
+        return "TOOL_ERROR: в корзине должно быть от 1 до 20 позиций"
 
     cart_items = [{"id": pid, "q": q} for pid, q in merged.items()]
     raw = await mcp.call_tool("vkusvill_cart_link_create", {"products": cart_items})
@@ -273,7 +314,7 @@ async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
             d = _payload(detail_raw)
             return {
                 "id": pid,
-                "name": d.get("name"),
+                "name": _clean(d.get("name")),
                 "price": (d.get("price") or {}).get("current"),
                 "quantity": merged[pid],
             }

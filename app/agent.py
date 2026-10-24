@@ -19,7 +19,7 @@ from app.events import Emit, TOOL_LABELS
 from app.mcp_client import MCPClientManager
 from app.prompts import SYSTEM_PROMPT
 from app.tools.schemas import TOOL_SPECS
-from app.tools.vkusvill import TOOL_HANDLERS
+from app.tools.vkusvill import TOOL_HANDLERS, current_cart_from_history
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ class Agent:
             )
             for c in calls.values():
                 await emit("tool", {"name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"])})
-                result = await self._execute(c["name"], c["args"], emit)
+                result = await self._execute(c["name"], c["args"], emit, convo)
                 # полный результат инструмента — для eval и отладки (UI игнорирует)
                 await emit("tool_result", {"name": c["name"], "result": result})
                 convo.append(
@@ -115,7 +115,9 @@ class Agent:
             {"text": "\n\n_Достигнут лимит шагов — вот что удалось найти._"},
         )
 
-    async def _execute(self, name: str, args_str: str, emit: Emit) -> str:
+    async def _execute(
+        self, name: str, args_str: str, emit: Emit, convo: list[dict]
+    ) -> str:
         handler = TOOL_HANDLERS.get(name)
         if handler is None:
             return f"TOOL_ERROR: неизвестный инструмент {name}"
@@ -125,6 +127,9 @@ class Agent:
             return f"TOOL_ERROR: невалидный JSON аргументов ({exc})"
         if not isinstance(args, dict):
             return "TOOL_ERROR: аргументы должны быть JSON-объектом"
+        if name == "create_cart":
+            # текущая корзина из блока [В корзине: …] — обёртка объединит состав
+            args.setdefault("_current_cart", current_cart_from_history(convo))
         try:
             return await handler(args, self._mcp, emit)
         except Exception as exc:  # noqa: BLE001 — ошибка = текст для LLM

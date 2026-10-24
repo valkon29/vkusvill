@@ -78,3 +78,64 @@ async def test_create_cart_clamps_quantity(recorder, fake_mcp):
     )
     cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
     assert cart_call[1]["products"][0]["q"] == 40
+
+
+def test_current_cart_from_history_block():
+    msgs = [
+        {"role": "user", "content": "добавь суп"},
+        {"role": "assistant", "content": (
+            "Готово!\n\n[В корзине: id=58289 Печенье сдобное, 300 г ×1; "
+            "id=48315 Суп с курицей ×2]"
+        )},
+        {"role": "user", "content": "ещё сыр"},
+    ]
+    assert tv.current_cart_from_history(msgs) == [
+        {"id": 58289, "quantity": 1.0},
+        {"id": 48315, "quantity": 2.0},
+    ]
+    assert tv.current_cart_from_history([{"role": "user", "content": "нет корзины"}]) == []
+
+
+async def test_create_cart_merges_with_current(recorder, fake_mcp):
+    await tv.create_cart(
+        {
+            "products": [{"id": 999, "quantity": 1}],
+            "_current_cart": [{"id": 114976, "quantity": 2}],
+        },
+        fake_mcp,
+        recorder,
+    )
+    # в MCP ушёл объединённый состав: текущая корзина + новый товар
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [
+        {"id": 114976, "q": 2},
+        {"id": 999, "q": 1},
+    ]
+
+
+async def test_create_cart_new_quantity_overrides_current(recorder, fake_mcp):
+    await tv.create_cart(
+        {
+            "products": [{"id": 114976, "quantity": 5}],
+            "_current_cart": [{"id": 114976, "quantity": 2}],
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 114976, "q": 5}]
+
+
+async def test_create_cart_replaces_when_flag(recorder, fake_mcp):
+    await tv.create_cart(
+        {
+            "products": [{"id": 999, "quantity": 1}],
+            "replace": True,
+            "_current_cart": [{"id": 114976, "quantity": 2}],
+        },
+        fake_mcp,
+        recorder,
+    )
+    # replace=true: старый состав отброшен
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 999, "q": 1}]
