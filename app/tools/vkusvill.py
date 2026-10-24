@@ -251,12 +251,35 @@ def _clamp_q(q: float) -> float:
 
 _CART_BLOCK_RE = re.compile(r"\[В корзине:[^\]]*\]")
 _CART_ITEM_RE = re.compile(r"id=(\d+)[^;]*?×\s*([\d.]+)")
+_SHOWN_BLOCK_RE = re.compile(r"\[Показаны товары:[^\]]*\]")
+# оба служебных блока (фронтенд дописывает их в историю как носитель состояния)
+_CTX_BLOCKS_RE = re.compile(r"\s*\[(Показаны товары|В корзине)[^\]]*\]", re.IGNORECASE)
+
+
+def strip_context_blocks(text):
+    """Убирает служебные блоки из текста сообщения — LLM их не видит."""
+    if not isinstance(text, str):
+        return text
+    return _CTX_BLOCKS_RE.sub("", text).strip()
+
+
+def last_shown_products_from_history(messages: list[dict]) -> str | None:
+    """Последний блок [Показаны товары: …] — по нему решается «этот товар»."""
+    for msg in reversed(messages):
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        block = _SHOWN_BLOCK_RE.search(content)
+        if block:
+            return block.group(0)
+    return None
 
 
 def current_cart_from_history(messages: list[dict]) -> list[dict]:
     """Текущая корзина из служебного блока [В корзине: …] в истории.
 
-    Блок дописывает фронтенд после события cart — LLM и код видят один состав.
+    Блок дописывает фронтенд после события cart — состояние переносится
+    в системный промпт, LLM эти блоки в сообщениях не видит.
     """
     for msg in reversed(messages):
         content = msg.get("content")

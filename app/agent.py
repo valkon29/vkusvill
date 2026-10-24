@@ -19,7 +19,12 @@ from app.events import Emit, TOOL_LABELS
 from app.mcp_client import MCPClientManager
 from app.prompts import SYSTEM_PROMPT
 from app.tools.schemas import TOOL_SPECS
-from app.tools.vkusvill import TOOL_HANDLERS, current_cart_from_history
+from app.tools.vkusvill import (
+    TOOL_HANDLERS,
+    current_cart_from_history,
+    last_shown_products_from_history,
+    strip_context_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,23 +40,49 @@ class Agent:
     async def run(self, messages: list[dict], emit: Emit) -> None:
         """Прогоняет агентный цикл, отправляя события через emit.
 
-        messages копируется — история вызывающего не мутируется.
+        messages копируется — история вызывающего не мутируется. Служебные
+        блоки (показанные товары, корзина) вырезаются из сообщений и
+        переносятся в системный промпт: модель не должна их видеть в истории
+        и копировать в свои ответы.
         """
-        convo = self._with_system_prompt(messages)
+        cart = current_cart_from_history(messages)
+        shown = last_shown_products_from_history(messages)
+        convo = self._with_system_prompt(messages, cart, shown)
         try:
-            await self._loop(convo, emit)
+            await self._loop(convo, emit, cart)
         except Exception as exc:  # noqa: BLE001 — пользователю нужен ответ, не 500
             logger.exception("Сбой агентного цикла")
             await emit("error", {"message": str(exc)})
         finally:
             await emit("done", {})
 
-    def _with_system_prompt(self, messages: list[dict]) -> list[dict]:
+    def _with_system_prompt(
+        self, messages: list[dict], cart: list[dict], shown: str | None
+    ) -> list[dict]:
+        clean = [
+            (
+                {**m, "content": strip_context_blocks(m.get("content"))}
+                if isinstance(m.get("content"), str)
+                else m
+            )
+            for m in messages
+        ]
+        context = ""
+        if shown:
+            context += f"\n\nПоказанные пользователю товары (последняя подборка): {shown}"
+        if cart:
+            context += "\n\nТекущая корзина: " + "; ".join(
+                f"id={c['id']} ×{c['quantity']}" for c in cart
+            )
         if messages and messages[0].get("role") == "system":
-            return list(messages)
-        return [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+            head = {
+                "role": "system",
+                "content": str(messages[0].get("content", "")) + context,
+            }
+            return [head, *clean[1:]]
+        return [{"role": "system", "content": SYSTEM_PROMPT + context}, *clean]
 
-    async def _loop(self, convo: list[dict], emit: Emit) -> None:
+    async def _loop(self, convo: list[dict], emit: Emit, cart: list[dict]) -> None:
         for _ in range(settings.max_tool_iterations):
             stream = await self._llm.chat.completions.create(
                 model=settings.model_name,
@@ -99,7 +130,7 @@ class Agent:
             )
             for c in calls.values():
                 await emit("tool", {"name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"])})
-                result = await self._execute(c["name"], c["args"], emit, convo)
+                result = await self._execute(c["name"], c["args"], emit, cart)
                 # полный результат инструмента — для eval и отладки (UI игнорирует)
                 await emit("tool_result", {"name": c["name"], "result": result})
                 convo.append(
@@ -116,7 +147,7 @@ class Agent:
         )
 
     async def _execute(
-        self, name: str, args_str: str, emit: Emit, convo: list[dict]
+        self, name: str, args_str: str, emit: Emit, cart: list[dict]
     ) -> str:
         handler = TOOL_HANDLERS.get(name)
         if handler is None:
@@ -128,8 +159,8 @@ class Agent:
         if not isinstance(args, dict):
             return "TOOL_ERROR: аргументы должны быть JSON-объектом"
         if name == "create_cart":
-            # текущая корзина из блока [В корзине: …] — обёртка объединит состав
-            args.setdefault("_current_cart", current_cart_from_history(convo))
+            # текущая корзина — из системного контекста; обёртка объединит состав
+            args.setdefault("_current_cart", cart)
         try:
             return await handler(args, self._mcp, emit)
         except Exception as exc:  # noqa: BLE001 — ошибка = текст для LLM
