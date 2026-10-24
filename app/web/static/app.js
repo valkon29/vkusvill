@@ -106,7 +106,7 @@ function renderProducts(items) {
       ${p.image ? `<img src="${p.image}" loading="lazy" alt="">`
                 : `<div class="ph">🛍️</div>`}
       <div class="info">
-        <div class="name">${escapeHtml(p.name || "")}</div>
+        <div class="name" title="${escapeHtml(p.name || "")}">${escapeHtml(p.name || "")}</div>
         <div class="price-row">
           <span class="price">${p.price ?? "—"} ₽</span>
           ${p.old_price ? `<span class="old-price">${p.old_price} ₽</span>` : ""}
