@@ -150,3 +150,47 @@ async def test_create_cart_merges_cart_from_context(recorder, fake_mcp):
         {"id": 114976, "q": 2},
         {"id": 999, "q": 1},
     ]
+
+
+async def test_cart_claim_without_tool_forces_retry(recorder, fake_mcp):
+    # модель «обновила корзину словами» — агент обязан принудить к create_cart
+    agent = make_agent(
+        [
+            [FakeChunk(content="Суп добавлен в корзину. Итоговая сумма: 653 рубля.")],
+            [
+                FakeChunk(tool_calls=[FakeTC(0, "call_1", "create_cart",
+                                             '{"products": [{"id": 999, "quantity": 1}]}')]),
+            ],
+            [FakeChunk(content="Готово: корзина собрана.")],
+        ],
+        fake_mcp,
+    )
+    await agent.run([{"role": "user", "content": "добавь суп"}], recorder)
+
+    # create_cart реально вызван несмотря на «словесное» обновление
+    cart_calls = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+    assert len(cart_calls) == 1
+
+    # пользователю видна плашка о принудительном оформлении
+    text = "".join(d["text"] for t, d in recorder.events if t == "token")
+    assert "Оформляю корзину" in text
+
+    # поправка ушла модели (один раз, осталась в истории последующих запросов)
+    last_request = agent._llm.requests[-1]
+    nudges = [
+        m for m in last_request["messages"]
+        if m.get("role") == "user" and "СИСТЕМНОЕ СООБЩЕНИЕ" in m.get("content", "")
+    ]
+    assert len(nudges) == 1
+
+
+async def test_cart_mention_without_claim_no_retry(recorder, fake_mcp):
+    # вопрос о состоянии корзины — не утверждение об изменении, повтора быть не должно
+    agent = make_agent(
+        [[FakeChunk(content="Сейчас в корзине печенье и суп. Итого 651 рубль.")]],
+        fake_mcp,
+    )
+    await agent.run([{"role": "user", "content": "что в корзине?"}], recorder)
+
+    assert not [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+    assert len(agent._llm.requests) == 1

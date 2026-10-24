@@ -10,6 +10,7 @@ run_agent() не знает ни про FastAPI, ни про HTTP — тольк
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
@@ -27,6 +28,21 @@ from app.tools.vkusvill import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Ответ утверждает изменение корзины («добавлено в корзину», «убрал из корзины»...)
+_CART_CLAIM_RE = re.compile(
+    r"(добавл\w*|полож\w*|собрал\w*|собер\w*|убрал\w*|убер\w*|удали\w*)[^\n]{0,60}корзин",
+    re.IGNORECASE,
+)
+# Принудительная поправка, когда модель объявила изменение корзины без вызова
+_CART_FORCED_NUDGE = (
+    "СИСТЕМНОЕ СООБЩЕНИЕ: в предыдущем ответе ты сообщил об изменении корзины, "
+    "но не вызвал инструмент create_cart — изменения не произошли, ссылки на "
+    "корзину у пользователя нет. Вызови create_cart сейчас: для добавления "
+    "достаточно передать только новые товары, они автоматически объединятся "
+    "с текущей корзиной. Если не хватает id товара — сначала вызови "
+    "search_products. После вызова кратко подтверди состав и итоговую сумму."
+)
 
 
 class Agent:
@@ -83,6 +99,7 @@ class Agent:
         return [{"role": "system", "content": SYSTEM_PROMPT + context}, *clean]
 
     async def _loop(self, convo: list[dict], emit: Emit, cart: list[dict]) -> None:
+        used_tools: set[str] = set()
         for _ in range(settings.max_tool_iterations):
             stream = await self._llm.chat.completions.create(
                 model=settings.model_name,
@@ -112,6 +129,18 @@ class Agent:
                             call["args"] += tc.function.arguments
 
             if not calls:
+                text = "".join(content_parts)
+                # Гарантия: утверждение об изменении корзины без вызова
+                # create_cart — принудительный второй заход за реальным вызовом
+                if text and "create_cart" not in used_tools and _CART_CLAIM_RE.search(text):
+                    logger.info(
+                        "Модель объявила изменение корзины без create_cart — "
+                        "принудительный запрос вызова"
+                    )
+                    await emit("token", {"text": "\n\n_Оформляю корзину…_"})
+                    convo.append({"role": "assistant", "content": text})
+                    convo.append({"role": "user", "content": _CART_FORCED_NUDGE})
+                    continue
                 return  # финальный ответ — только текст
 
             convo.append(
@@ -129,6 +158,8 @@ class Agent:
                 }
             )
             for c in calls.values():
+                used_tools.add(c["name"])
+                logger.info("Вызов инструмента %s", c["name"])
                 await emit("tool", {"name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"])})
                 result = await self._execute(c["name"], c["args"], emit, cart)
                 # полный результат инструмента — для eval и отладки (UI игнорирует)
