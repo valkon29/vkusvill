@@ -295,32 +295,41 @@ def current_cart_from_history(messages: list[dict]) -> list[dict]:
 
 
 async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
-    # _current_cart подставляет агент из блока [В корзине: …] — текущий состав
+    # _current_cart подставляет агент: на старте хода — из блока [В корзине: …],
+    # далее — результат предыдущего create_cart в этом же ходе. Корзина может
+    # только накапливаться: replace игнорируем, молча потерять позицию модель
+    # не может. Удаление — явное, через quantity=0.
     current = args.pop("_current_cart", None) or []
-    replace = bool(args.get("replace"))
+    args.pop("replace", None)  # устаревший флаг — семантика всегда «объединение»
     products = args.get("products") or []
 
-    # позиции запроса: дубликаты суммируются
+    # позиции запроса: положительные дубликаты суммируются, 0 = удалить
     new_items: dict[int, float] = {}
     for p in products:
         pid = int(p.get("id") or 0)
         if pid <= 0:
             return f"TOOL_ERROR: некорректный id товара {p.get('id')!r}"
-        new_items[pid] = round(min(40.0, new_items.get(pid, 0.0) + _clamp_q(p.get("quantity") or 1)), 2)
+        q = 0.0 if p.get("quantity") is None else float(p.get("quantity"))
+        if q <= 0:
+            new_items[pid] = 0.0
+        else:
+            new_items[pid] = round(min(40.0, new_items.get(pid, 0.0) + _clamp_q(q)), 2)
 
-    # без replace объединяем с текущей корзиной; новое количество затирает старое
-    merged: dict[int, float] = (
-        {}
-        if replace
-        else {
-            int(c["id"]): _clamp_q(c.get("quantity") or 1)
-            for c in current
-            if int(c.get("id") or 0) > 0
-        }
-    )
-    merged.update(new_items)
-    if not 1 <= len(merged) <= 20:
-        return "TOOL_ERROR: в корзине должно быть от 1 до 20 позиций"
+    # объединение с текущей корзиной; новое количество затирает старое
+    merged: dict[int, float] = {
+        int(c["id"]): _clamp_q(c.get("quantity") or 1)
+        for c in current
+        if int(c.get("id") or 0) > 0
+    }
+    for pid, q in new_items.items():
+        if q <= 0:
+            merged.pop(pid, None)  # quantity=0 — убрать из корзины
+        else:
+            merged[pid] = q
+    if not merged:
+        return "TOOL_ERROR: корзина пуста — передай хотя бы один товар с quantity > 0"
+    if len(merged) > 20:
+        return "TOOL_ERROR: в корзине может быть не больше 20 позиций"
 
     cart_items = [{"id": pid, "q": q} for pid, q in merged.items()]
     raw = await mcp.call_tool("vkusvill_cart_link_create", {"products": cart_items})
@@ -350,6 +359,11 @@ async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
         "cart",
         {"url": link, "total": round(total, 2), "count": len(details), "items": details},
     )
+    # финальный состав — агент подставит его как _current_cart в следующий
+    # create_cart этого же хода (иначе второй вызов затрёт первый)
+    args["_final_cart"] = [
+        {"id": pid, "quantity": q} for pid, q in merged.items()
+    ]
     result = {
         "link": link,
         "total": round(total, 2),

@@ -31,13 +31,21 @@ logger = logging.getLogger(__name__)
 
 # Ответ утверждает изменение корзины («добавлено в корзину», «убрал из корзины»).
 # Только утвердившиеся формы: инфинитивы («положить в корзину?» — вопрос) не считаются.
+# Две ориентации: «добавил … в корзину» и «В корзину добавлен …».
 _CART_CLAIM_RE = re.compile(
+    r"(?:"
     r"(?:добавлен(?:а|о|ы)?|добавл(?:ю|им|ила?|ишь)"
     r"|положен(?:а|о|ы)?|полож(?:ил|у|им)"
     r"|собран(?:а|о|ы)?|собрал(?:а|о|и)?|собер(?:у|ёшь|ём|ет)"
     r"|убран(?:а|о|ы)?|убрал(?:а|о|и)?|убер(?:у|ёшь|ём|ет)"
     r"|удалён(?:а|о|ы)?|удален(?:а|о|ы)?|удал(?:ил|ю|им))"
-    r"[^\n]{0,60}корзин",
+    r"[^\n]{0,60}корзин"
+    r"|корзин\w*[^\n]{0,20}"
+    r"(?:добавлен(?:а|о|ы)?|добавл(?:ю|им|ила?|ишь)"
+    r"|положен(?:а|о|ы)?|убран(?:а|о|ы)?"
+    r"|удалён(?:а|о|ы)?|удален(?:а|о|ы)?|удал(?:ил|ю|им)"
+    r"|исключён(?:а|о|ы)?|исключен(?:а|о|ы)?)"
+    r")",
     re.IGNORECASE,
 )
 # Обещание ссылки на корзину без вызова create_cart
@@ -165,19 +173,18 @@ class Agent:
                             {"name": "create_cart",
                              "label": TOOL_LABELS.get("create_cart", "create_cart")},
                         )
-                        result = await self._execute(
+                        result, _ = await self._execute(
                             "create_cart",
                             json.dumps(
                                 {
                                     "products": [
                                         {"id": c["id"], "quantity": c["quantity"]}
                                         for c in cart
-                                    ],
-                                    "replace": True,
+                                    ]
                                 }
                             ),
                             emit,
-                            [],
+                            cart,
                         )
                         await emit(
                             "tool_result", {"name": "create_cart", "result": result}
@@ -209,7 +216,7 @@ class Agent:
                 used_tools.add(c["name"])
                 logger.info("Вызов инструмента %s: %s", c["name"], c["args"][:300])
                 await emit("tool", {"name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"])})
-                result = await self._execute(c["name"], c["args"], emit, cart)
+                result, cart = await self._execute(c["name"], c["args"], emit, cart)
                 # полный результат инструмента — для eval и отладки (UI игнорирует)
                 await emit("tool_result", {"name": c["name"], "result": result})
                 convo.append(
@@ -227,21 +234,32 @@ class Agent:
 
     async def _execute(
         self, name: str, args_str: str, emit: Emit, cart: list[dict]
-    ) -> str:
+    ) -> tuple[str, list[dict]]:
+        """Выполняет инструмент; возвращает (текст для LLM, актуальная корзина).
+
+        Корзина обновляется после успешного create_cart: второй вызов
+        create_cart в этом же ходе объединяется с результатом первого,
+        а не затирает его.
+        """
         handler = TOOL_HANDLERS.get(name)
         if handler is None:
-            return f"TOOL_ERROR: неизвестный инструмент {name}"
+            return f"TOOL_ERROR: неизвестный инструмент {name}", cart
         try:
             args = json.loads(args_str) if args_str.strip() else {}
         except json.JSONDecodeError as exc:
-            return f"TOOL_ERROR: невалидный JSON аргументов ({exc})"
+            return f"TOOL_ERROR: невалидный JSON аргументов ({exc})", cart
         if not isinstance(args, dict):
-            return "TOOL_ERROR: аргументы должны быть JSON-объектом"
+            return "TOOL_ERROR: аргументы должны быть JSON-объектом", cart
         if name == "create_cart":
             # текущая корзина — из системного контекста; обёртка объединит состав
             args.setdefault("_current_cart", cart)
         try:
-            return await handler(args, self._mcp, emit)
+            result = await handler(args, self._mcp, emit)
         except Exception as exc:  # noqa: BLE001 — ошибка = текст для LLM
             logger.warning("Сбой инструмента %s: %r", name, exc)
-            return f"TOOL_ERROR: {exc}"
+            return f"TOOL_ERROR: {exc}", cart
+        if name == "create_cart" and not result.startswith("TOOL_ERROR"):
+            final = args.get("_final_cart")
+            if final is not None:
+                cart = final
+        return result, cart

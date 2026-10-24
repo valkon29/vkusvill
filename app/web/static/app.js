@@ -211,6 +211,7 @@ function renderCart(data) {
     <a class="cart-btn" href="${data.url}" target="_blank" rel="noopener">Открыть корзину ВкусВилл →</a>`;
   chatEl.appendChild(block);
   scrollDown();
+  return block;
 }
 
 function escapeHtml(s) {
@@ -239,7 +240,8 @@ async function send() {
   let answer = "";
   let lastChip = null;
   let shownProducts = []; // id/названия карточек — для контекста следующего запроса
-  let cartItems = [];
+  let cartItems = [];     // состав ПОСЛЕДНЕЙ корзины этого хода
+  let lastCartBlock = null;
 
   try {
     const resp = await fetch("/api/chat", {
@@ -277,8 +279,11 @@ async function send() {
           renderProducts(ev.data.items || []);
           shownProducts.push(...(ev.data.items || []));
         } else if (ev.type === "cart") {
-          renderCart(ev.data);
-          cartItems.push(...(ev.data.items || []));
+          // за один ход корзина может собираться несколько раз — актуален
+          // только последний состав (и один блок корзины под сообщением)
+          if (lastCartBlock) lastCartBlock.remove();
+          lastCartBlock = renderCart(ev.data);
+          cartItems = (ev.data.items || []).slice();
           localStorage.setItem(CART_KEY, JSON.stringify(ev.data));
         } else if (ev.type === "error") {
           answer += `\n\n⚠ ${ev.data.message}`;

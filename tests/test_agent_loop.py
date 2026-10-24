@@ -201,6 +201,9 @@ def test_cart_claim_regexes():
 
     assert _CART_CLAIM_RE.search("Суп добавлен в корзину. Итоговая сумма: 651 рубль.")
     assert _CART_CLAIM_RE.search("Я убрал печенье из корзины.")
+    # обратный порядок слов: «В корзину добавлен …», «Из корзины удалён …»
+    assert _CART_CLAIM_RE.search("В корзину добавлен суп «Рассольник» по цене 488 руб.")
+    assert _CART_CLAIM_RE.search("Из корзины удалён сырники.")
     # вопросы о состоянии корзины — не утверждения
     assert not _CART_CLAIM_RE.search("Сейчас в корзине печенье и суп. Итого 651 рубль.")
     assert not _CART_CLAIM_RE.search("Что положить в корзину?")
@@ -209,6 +212,31 @@ def test_cart_claim_regexes():
         "Ссылка на корзину ВкусВилла появится под моим сообщением."
     )
     assert not _CART_LINK_RE.search("Вот ссылка на корзину.")
+
+
+async def test_sequential_create_cart_calls_accumulate(recorder, fake_mcp):
+    # модель дважды вызвала create_cart за один ход — второй вызов обязан
+    # объединиться с результатом первого, а не затереть его
+    agent = make_agent(
+        [
+            [FakeChunk(tool_calls=[FakeTC(0, "call_1", "create_cart",
+                                         '{"products": [{"id": 999, "quantity": 1}]}')])],
+            [FakeChunk(tool_calls=[FakeTC(0, "call_2", "create_cart",
+                                         '{"products": [{"id": 114976, "quantity": 2}]}')])],
+            [FakeChunk(content="Готово.")],
+        ],
+        fake_mcp,
+    )
+    await agent.run([{"role": "user", "content": "добавь печенье и сырники"}], recorder)
+
+    cart_calls = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+    assert len(cart_calls) == 2
+    # первый вызов: только новый товар; второй: результат первого + новый товар
+    assert cart_calls[0][1]["products"] == [{"id": 999, "q": 1}]
+    assert cart_calls[1][1]["products"] == [
+        {"id": 999, "q": 1},
+        {"id": 114976, "q": 2},
+    ]
 
 
 async def test_link_promise_rebuilds_cart_directly(recorder, fake_mcp):

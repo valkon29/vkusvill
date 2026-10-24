@@ -126,7 +126,9 @@ async def test_create_cart_new_quantity_overrides_current(recorder, fake_mcp):
     assert cart_call[1]["products"] == [{"id": 114976, "q": 5}]
 
 
-async def test_create_cart_replaces_when_flag(recorder, fake_mcp):
+async def test_create_cart_replace_flag_is_ignored(recorder, fake_mcp):
+    # replace больше не существует: корзина может только накапливаться,
+    # молча потерять позицию модель не может
     await tv.create_cart(
         {
             "products": [{"id": 999, "quantity": 1}],
@@ -136,6 +138,44 @@ async def test_create_cart_replaces_when_flag(recorder, fake_mcp):
         fake_mcp,
         recorder,
     )
-    # replace=true: старый состав отброшен
     cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
-    assert cart_call[1]["products"] == [{"id": 999, "q": 1}]
+    assert cart_call[1]["products"] == [
+        {"id": 114976, "q": 2},
+        {"id": 999, "q": 1},
+    ]
+
+
+async def test_create_cart_zero_quantity_removes(recorder, fake_mcp):
+    await tv.create_cart(
+        {
+            "products": [
+                {"id": 114976, "quantity": 0},  # удалить
+                {"id": 999, "quantity": 1},     # добавить
+            ],
+            "_current_cart": [
+                {"id": 114976, "quantity": 2},
+                {"id": 555, "quantity": 1},
+            ],
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    # 114976 удалён, 555 не упомянут — остался, 999 добавлен
+    assert cart_call[1]["products"] == [
+        {"id": 555, "q": 1},
+        {"id": 999, "q": 1},
+    ]
+
+
+async def test_create_cart_reports_final_composition(recorder, fake_mcp):
+    # обёртка отдаёт агенту финальный состав — для накопления внутри хода
+    args = {
+        "products": [{"id": 999, "quantity": 1}],
+        "_current_cart": [{"id": 114976, "quantity": 2}],
+    }
+    await tv.create_cart(args, fake_mcp, recorder)
+    assert args["_final_cart"] == [
+        {"id": 114976, "quantity": 2},
+        {"id": 999, "quantity": 1},
+    ]
