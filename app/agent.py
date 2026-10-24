@@ -24,6 +24,7 @@ from app.tools.vkusvill import (
     TOOL_HANDLERS,
     cart_names_from_history,
     current_cart_from_history,
+    ids_named_for_removal,
     last_shown_products_from_history,
     strip_context_blocks,
 )
@@ -59,13 +60,13 @@ _CART_LINK_RE = re.compile(
 _CART_FORCED_NUDGE = (
     "СИСТЕМНОЕ СООБЩЕНИЕ: в предыдущем ответе ты сообщил об изменении корзины "
     "или пообещал ссылку на неё, но не вызвал инструмент create_cart — ссылки "
-    "у пользователя нет. Вызови create_cart сейчас: передай ВСЕ позиции "
-    "текущей корзины из раздела контекста с их же количествами — тогда "
-    "появится актуальная кнопка со ссылкой. НИКОГДА не передавай id, которых "
-    "нет в разделе контекста или в результатах инструментов: выдуманный id "
-    "приводит к ошибке всей сборки. Если нужного id в контексте нет — сначала "
-    "вызови search_products. Если корзина пуста и добавить нечего — честно "
-    "скажи, что корзина ещё не собрана, и предложи товары."
+    "у пользователя нет. Вызови create_cart сейчас: передай позиции текущей "
+    "корзины из раздела контекста с их же количествами, а товары, которые "
+    "пользователь просил убрать, — с quantity=0. НИКОГДА не передавай id, "
+    "которых нет в разделе контекста или в результатах инструментов: "
+    "выдуманный id приводит к ошибке всей сборки. Если нужного id в контексте "
+    "нет — сначала вызови search_products. Если корзина пуста и добавить "
+    "нечего — честно скажи, что корзина ещё не собрана, и предложи товары."
 )
 
 
@@ -183,33 +184,38 @@ class Agent:
                         continue
                     if _CART_LINK_RE.search(text) and cart:
                         # обещана ссылка — пересобираем текущую корзину напрямую,
-                        # без LLM: состав и количества детерминированы
-                        logger.info("Пересборка корзины напрямую по обещанию ссылки")
-                        await emit(
-                            "tool",
-                            {"name": "create_cart",
-                             "label": TOOL_LABELS.get("create_cart", "create_cart")},
-                        )
-                        result, _ = await self._execute(
-                            "create_cart",
-                            json.dumps(
-                                {
-                                    "products": [
-                                        {"id": c["id"], "quantity": c["quantity"]}
-                                        for c in cart
-                                    ]
-                                }
-                            ),
-                            emit,
-                            cart,
-                            names,
-                            user_msg,
-                        )
-                        await emit(
-                            "tool_result", {"name": "create_cart", "result": result}
-                        )
-                        if not result.startswith("TOOL_ERROR"):
-                            return
+                        # без LLM: состав и количества детерминированы.
+                        # Товары, которые пользователь просил убрать,
+                        # из пересбора исключаем
+                        drop = ids_named_for_removal(names, user_msg)
+                        rebuild = [c for c in cart if c["id"] not in drop]
+                        if rebuild:
+                            logger.info("Пересборка корзины напрямую по обещанию ссылки")
+                            await emit(
+                                "tool",
+                                {"name": "create_cart",
+                                 "label": TOOL_LABELS.get("create_cart", "create_cart")},
+                            )
+                            result, _ = await self._execute(
+                                "create_cart",
+                                json.dumps(
+                                    {
+                                        "products": [
+                                            {"id": c["id"], "quantity": c["quantity"]}
+                                            for c in rebuild
+                                        ]
+                                    }
+                                ),
+                                emit,
+                                rebuild,
+                                names,
+                                user_msg,
+                            )
+                            await emit(
+                                "tool_result", {"name": "create_cart", "result": result}
+                            )
+                            if not result.startswith("TOOL_ERROR"):
+                                return
                         # прямая пересборка не удалась — пусть модель разбирается
                         await emit("token", {"text": "\n\n_Оформляю корзину…_"})
                         convo.append({"role": "assistant", "content": text})

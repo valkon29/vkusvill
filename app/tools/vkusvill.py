@@ -312,9 +312,33 @@ def cart_names_from_history(messages: list[dict]) -> dict[int, str]:
 
 _WORD_RE = re.compile(r"[а-яёa-z0-9]+")
 
+# императивные формы: «ты удалил?» (вопрос) не должен считаться приказом
+_REMOVAL_INTENT_RE = re.compile(
+    r"\b(?:убери|уберите|удали|удалите|выкинь|выкиньте|исключи|исключите"
+    r"|избавься|избавь)\b"
+    r"|не\s+(?:нужен|нужна|нужно|нужны)",
+    re.IGNORECASE,
+)
+
 
 def _words(text: str) -> set[str]:
     return {w for w in _WORD_RE.findall(text.lower()) if len(w) >= 3}
+
+
+def ids_named_for_removal(names: dict[int, str], user_msg: str) -> set[int]:
+    """id товаров корзины, которые пользователь просит убрать.
+
+    Работает и тогда, когда модель передаёт новый состав без удаляемого
+    товара («удаление умолчанием»): намерение («убери …») + название из
+    корзины в сообщении пользователя. Вопросы («ты удалил винегрет?»)
+    и фильтры («без лактозы») намерением не считаются.
+    """
+    if not user_msg or not names:
+        return set()
+    if not _REMOVAL_INTENT_RE.search(user_msg):
+        return set()
+    msg_words = _words(user_msg)
+    return {pid for pid, name in names.items() if _words(name) & msg_words}
 
 
 def _removal_mismatch(
@@ -398,6 +422,13 @@ async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
         mismatch = _removal_mismatch(removed_ids, set(merged), names, user_msg)
         if mismatch:
             return mismatch
+
+    # удаление умолчанием: пользователь просил убрать товар, а модель
+    # передала новый состав без него — не упомянутый в вызове удаляем сами.
+    # Не действует при confirm_removals: явное подтверждение модели важнее
+    if not confirm:
+        for pid in ids_named_for_removal(names, user_msg) & current_ids - set(new_items):
+            merged.pop(pid, None)
     if not merged:
         return (
             "TOOL_ERROR: корзина пуста — передай хотя бы один товар с quantity > 0. "

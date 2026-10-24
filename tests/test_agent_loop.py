@@ -261,3 +261,24 @@ async def test_link_promise_rebuilds_cart_directly(recorder, fake_mcp):
     cart_events = [d for t, d in recorder.events if t == "cart"]
     assert len(cart_events) == 1
     assert cart_events[0]["total"] == 612  # 306 × 2
+
+
+async def test_link_promise_rebuild_drops_removed_item(recorder, fake_mcp):
+    # модель «удалила словами» и обещала ссылку — прямой пересбор обязан
+    # исключить товар, который пользователь просил убрать
+    agent = make_agent(
+        [[FakeChunk(content="Ссылка на корзину появится под сообщением.")]],
+        fake_mcp,
+    )
+    messages = [
+        {"role": "user", "content": "собери корзину"},
+        {"role": "assistant", "content": (
+            "Готово.\n\n[В корзине: id=114976 Сырники ×2; id=555 Салат винегрет ×1]"
+        )},
+        {"role": "user", "content": "убери из корзины винегрет"},
+    ]
+    await agent.run(messages, recorder)
+
+    assert len(agent._llm.requests) == 1
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 114976, "q": 2}]

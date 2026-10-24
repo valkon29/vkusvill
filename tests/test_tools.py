@@ -290,3 +290,82 @@ def test_cart_names_from_history_block():
         58289: "Печенье сдобное",
         48315: "Суп с курицей",
     }
+
+
+# --- удаление умолчанием (модель передала состав без удаляемого товара) ---
+
+_NAMES3 = {
+    58289: "Печенье сдобное «Шоколадное», 300 г",
+    60658: "Суп «Рассольник» с курицей, 1 кг",
+    555: "Салат винегрет, 180 г",
+}
+_CURRENT3 = [
+    {"id": 58289, "quantity": 1},
+    {"id": 60658, "quantity": 1},
+    {"id": 555, "quantity": 1},
+]
+
+
+async def test_implicit_removal_by_omission(recorder, fake_mcp):
+    # «убери винегрет», модель передала состав без винегрета — убираем сами
+    await tv.create_cart(
+        {
+            "products": [
+                {"id": 58289, "quantity": 1},
+                {"id": 60658, "quantity": 1},
+            ],
+            "_current_cart": _CURRENT3,
+            "_cart_names": _NAMES3,
+            "_last_user_message": "убери из корзины винегрет",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [
+        {"id": 58289, "q": 1},
+        {"id": 60658, "q": 1},
+    ]
+
+
+async def test_implicit_removal_not_when_item_passed(recorder, fake_mcp):
+    # модель явно передала винегрет с количеством — её выбор уважаем
+    await tv.create_cart(
+        {
+            "products": [{"id": 555, "quantity": 2}],
+            "_current_cart": _CURRENT3,
+            "_cart_names": _NAMES3,
+            "_last_user_message": "убери из корзины винегрет",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert {"id": 555, "q": 2} in cart_call[1]["products"]
+
+
+async def test_no_implicit_removal_without_intent(recorder, fake_mcp):
+    # «добавь суп» — намерения удалить нет, не упомянутые позиции остаются
+    await tv.create_cart(
+        {
+            "products": [{"id": 60658, "quantity": 1}],
+            "_current_cart": _CURRENT3,
+            "_cart_names": _NAMES3,
+            "_last_user_message": "добавь ещё суп",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert len(cart_call[1]["products"]) == 3  # всё сохранилось
+
+
+def test_ids_named_for_removal():
+    names = _NAMES3
+    assert tv.ids_named_for_removal(names, "убери из корзины винегрет") == {555}
+    assert tv.ids_named_for_removal(names, "суп не нужен") == {60658}
+    assert tv.ids_named_for_removal(names, "выкинь печенье") == {58289}
+    # вопрос о прошлом и фильтр — не намерение
+    assert tv.ids_named_for_removal(names, "ты удалил винегрет?") == set()
+    assert tv.ids_named_for_removal(names, "добавь кофе без лактозы") == set()
+    assert tv.ids_named_for_removal(names, "добавь суп") == set()
