@@ -51,12 +51,20 @@ cp .env.example .env       # заполните LLM_API_KEY (Yandex AI Studio)
 SSE-эндпоинт. Eval-кейсы: бюджет, аллергены, скидки, пустой результат, недоступный
 MCP, уточняющие вопросы — все проверки детерминированные.
 
-## Деплой (Render)
+## Деплой (VPS)
 
-Конфигурация в `render.yaml`: web-сервис, Python 3.12, uvicorn на `$PORT`.
-`LLM_API_KEY` задаётся в дашборде Render. На free-тарифе инстанс засыпает после
-15 минут простоя — на время демо сервис держится пингом `/health` (UptimeRobot,
-раз в 10 минут).
+Сервис развёрнут на VPS (Ubuntu 24.04, nginx + systemd):
+
+- **Публичный URL**: http://176.12.68.185
+- uvicorn работает как systemd-сервис `vkusvill` на `127.0.0.1:8000`
+- nginx проксирует 80-й порт и не буферизует SSE
+  (`proxy_buffering off`, `proxy_read_timeout 300s`)
+
+Обновление продакшена:
+
+```bash
+ssh root@176.12.68.185 "cd /opt/vkusvill && git pull && systemctl restart vkusvill"
+```
 
 ## Структура
 
