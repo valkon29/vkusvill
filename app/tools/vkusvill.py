@@ -294,13 +294,74 @@ def current_cart_from_history(messages: list[dict]) -> list[dict]:
     return []
 
 
+# id=(\d+) имя … ×кол-во — имя нужно для сверки удаляемого товара
+_CART_NAME_RE = re.compile(r"id=(\d+)\s+([^;×]+?)\s*×")
+
+
+def cart_names_from_history(messages: list[dict]) -> dict[int, str]:
+    """id → название товара из последнего блока [В корзине: …]."""
+    for msg in reversed(messages):
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        block = _CART_BLOCK_RE.search(content)
+        if block:
+            return {int(m.group(1)): m.group(2).strip() for m in _CART_NAME_RE.finditer(block.group(0))}
+    return {}
+
+
+_WORD_RE = re.compile(r"[а-яёa-z0-9]+")
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD_RE.findall(text.lower()) if len(w) >= 3}
+
+
+def _removal_mismatch(
+    removed_ids: list[int], kept_ids: set[int], names: dict[int, str], user_msg: str
+) -> str | None:
+    """Проверка «удаляет ли модель тот товар, о котором просил пользователь».
+
+    YandexGPT иногда путает позиции: просит убрать печенье — она убирает суп.
+    Сигнал подмены: удаляемый товар в сообщении пользователя не упомянут,
+    зато упомянут товар, который модель оставляет. Если однозначной сверки
+    нет («убери всё», «номер 1», «оставь только суп») — не мешаем.
+    """
+    if not user_msg or not names:
+        return None
+    if re.search(r"остав|только|кроме", user_msg, re.IGNORECASE):
+        return None  # «оставь только суп» — оставляемый товар упоминанем законно
+    msg_words = _words(user_msg)
+    if not msg_words:
+        return None
+    for pid in removed_ids:
+        if _words(names.get(pid, "")) & msg_words:
+            return None  # удаляемый товар упомянут — всё сходится
+    for pid in kept_ids:
+        if _words(names.get(pid, "")) & msg_words:
+            cart_list = "; ".join(f"id={i} {n}" for i, n in names.items())
+            return (
+                f"TOOL_ERROR: похоже, ты удаляешь не тот товар. Пользователь "
+                f"просил: «{user_msg}», а ты удаляешь "
+                f"{', '.join(names.get(p, f'id={p}') for p in removed_ids)}, "
+                f"хотя пользователь упомянул «{names[pid]}». Корзина: {cart_list}. "
+                f"Сверь id по названию и повтори вызов. Если пользователь "
+                f"действительно просил удалить именно это — повтори вызов "
+                f"с \"confirm_removals\": true."
+            )
+    return None
+
+
 async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
     # _current_cart подставляет агент: на старте хода — из блока [В корзине: …],
     # далее — результат предыдущего create_cart в этом же ходе. Корзина может
     # только накапливаться: replace игнорируем, молча потерять позицию модель
     # не может. Удаление — явное, через quantity=0.
     current = args.pop("_current_cart", None) or []
+    names = args.pop("_cart_names", None) or {}
+    user_msg = str(args.pop("_last_user_message", "") or "")
     args.pop("replace", None)  # устаревший флаг — семантика всегда «объединение»
+    confirm = bool(args.pop("confirm_removals", False))
     products = args.get("products") or []
 
     # позиции запроса: положительные дубликаты суммируются, 0 = удалить
@@ -316,18 +377,33 @@ async def create_cart(args: dict, mcp: MCPClientManager, emit: Emit) -> str:
             new_items[pid] = round(min(40.0, new_items.get(pid, 0.0) + _clamp_q(q)), 2)
 
     # объединение с текущей корзиной; новое количество затирает старое
+    current_ids = {
+        int(c["id"]) for c in current if int(c.get("id") or 0) > 0
+    }
     merged: dict[int, float] = {
-        int(c["id"]): _clamp_q(c.get("quantity") or 1)
+        pid: _clamp_q(c.get("quantity") or 1)
         for c in current
-        if int(c.get("id") or 0) > 0
+        if (pid := int(c.get("id") or 0)) > 0
     }
     for pid, q in new_items.items():
         if q <= 0:
             merged.pop(pid, None)  # quantity=0 — убрать из корзины
         else:
             merged[pid] = q
+
+    # защита от подмены: модель удаляет товар, которого пользователь
+    # не упоминал, оставляя упомянутый
+    removed_ids = [pid for pid, q in new_items.items() if q <= 0 and pid in current_ids]
+    if removed_ids and not confirm:
+        mismatch = _removal_mismatch(removed_ids, set(merged), names, user_msg)
+        if mismatch:
+            return mismatch
     if not merged:
-        return "TOOL_ERROR: корзина пуста — передай хотя бы один товар с quantity > 0"
+        return (
+            "TOOL_ERROR: корзина пуста — передай хотя бы один товар с quantity > 0. "
+            "Если пользователь просил очистить корзину — так и скажи и предложи "
+            "собрать новую."
+        )
     if len(merged) > 20:
         return "TOOL_ERROR: в корзине может быть не больше 20 позиций"
 

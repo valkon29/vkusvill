@@ -22,6 +22,7 @@ from app.prompts import SYSTEM_PROMPT
 from app.tools.schemas import TOOL_SPECS
 from app.tools.vkusvill import (
     TOOL_HANDLERS,
+    cart_names_from_history,
     current_cart_from_history,
     last_shown_products_from_history,
     strip_context_blocks,
@@ -86,9 +87,18 @@ class Agent:
         """
         cart = current_cart_from_history(messages)
         shown = last_shown_products_from_history(messages)
+        names = cart_names_from_history(messages)
+        user_msg = next(
+            (
+                m["content"]
+                for m in reversed(messages)
+                if m.get("role") == "user" and isinstance(m.get("content"), str)
+            ),
+            "",
+        )
         convo = self._with_system_prompt(messages, cart, shown)
         try:
-            await self._loop(convo, emit, cart)
+            await self._loop(convo, emit, cart, names, user_msg)
         except Exception as exc:  # noqa: BLE001 — пользователю нужен ответ, не 500
             logger.exception("Сбой агентного цикла")
             await emit("error", {"message": str(exc)})
@@ -121,7 +131,14 @@ class Agent:
             return [head, *clean[1:]]
         return [{"role": "system", "content": SYSTEM_PROMPT + context}, *clean]
 
-    async def _loop(self, convo: list[dict], emit: Emit, cart: list[dict]) -> None:
+    async def _loop(
+        self,
+        convo: list[dict],
+        emit: Emit,
+        cart: list[dict],
+        names: dict[int, str],
+        user_msg: str,
+    ) -> None:
         used_tools: set[str] = set()
         for _ in range(settings.max_tool_iterations):
             stream = await self._llm.chat.completions.create(
@@ -185,6 +202,8 @@ class Agent:
                             ),
                             emit,
                             cart,
+                            names,
+                            user_msg,
                         )
                         await emit(
                             "tool_result", {"name": "create_cart", "result": result}
@@ -216,7 +235,9 @@ class Agent:
                 used_tools.add(c["name"])
                 logger.info("Вызов инструмента %s: %s", c["name"], c["args"][:300])
                 await emit("tool", {"name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"])})
-                result, cart = await self._execute(c["name"], c["args"], emit, cart)
+                result, cart = await self._execute(
+                    c["name"], c["args"], emit, cart, names, user_msg
+                )
                 # полный результат инструмента — для eval и отладки (UI игнорирует)
                 await emit("tool_result", {"name": c["name"], "result": result})
                 convo.append(
@@ -233,7 +254,13 @@ class Agent:
         )
 
     async def _execute(
-        self, name: str, args_str: str, emit: Emit, cart: list[dict]
+        self,
+        name: str,
+        args_str: str,
+        emit: Emit,
+        cart: list[dict],
+        names: dict[int, str] | None = None,
+        user_msg: str = "",
     ) -> tuple[str, list[dict]]:
         """Выполняет инструмент; возвращает (текст для LLM, актуальная корзина).
 
@@ -253,6 +280,8 @@ class Agent:
         if name == "create_cart":
             # текущая корзина — из системного контекста; обёртка объединит состав
             args.setdefault("_current_cart", cart)
+            args.setdefault("_cart_names", names or {})
+            args.setdefault("_last_user_message", user_msg)
         try:
             result = await handler(args, self._mcp, emit)
         except Exception as exc:  # noqa: BLE001 — ошибка = текст для LLM

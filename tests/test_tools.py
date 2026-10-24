@@ -179,3 +179,114 @@ async def test_create_cart_reports_final_composition(recorder, fake_mcp):
         {"id": 114976, "quantity": 2},
         {"id": 999, "quantity": 1},
     ]
+
+
+# --- защита от подмены удаляемого товара ---
+
+_NAMES = {
+    58289: "Печенье сдобное «Шоколадное», 300 г",
+    60658: "Суп «Рассольник» с курицей, 1 кг",
+}
+_CURRENT = [
+    {"id": 58289, "quantity": 1},
+    {"id": 60658, "quantity": 1},
+]
+
+
+async def test_removal_of_wrong_item_rejected(recorder, fake_mcp):
+    # пользователь просил убрать печенье, модель удаляет суп — подмена
+    result = await tv.create_cart(
+        {
+            "products": [{"id": 60658, "quantity": 0}],
+            "_current_cart": _CURRENT,
+            "_cart_names": _NAMES,
+            "_last_user_message": "убери печенье из корзины",
+        },
+        fake_mcp,
+        recorder,
+    )
+    assert result.startswith("TOOL_ERROR")
+    assert "не тот товар" in result
+    assert fake_mcp.calls == []  # до MCP подмена не дошла
+
+
+async def test_removal_of_named_item_allowed(recorder, fake_mcp):
+    # удаляют именно печенье, которое просил пользователь
+    await tv.create_cart(
+        {
+            "products": [{"id": 58289, "quantity": 0}],
+            "_current_cart": _CURRENT,
+            "_cart_names": _NAMES,
+            "_last_user_message": "убери печенье из корзины",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 60658, "q": 1}]
+
+
+async def test_removal_with_confirmation_passes(recorder, fake_mcp):
+    # модель настаивает после подсказки — подтверждённый вызов проходит
+    await tv.create_cart(
+        {
+            "products": [{"id": 60658, "quantity": 0}],
+            "confirm_removals": True,
+            "_current_cart": _CURRENT,
+            "_cart_names": _NAMES,
+            "_last_user_message": "убери печенье из корзины",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 58289, "q": 1}]
+
+
+async def test_removal_without_named_mention_allowed(recorder, fake_mcp):
+    # «номер 1 нужен» — товар не назван, сигнала подмены нет, не мешаем
+    await tv.create_cart(
+        {
+            "products": [{"id": 60658, "quantity": 0}, {"id": 999, "quantity": 1}],
+            "_current_cart": _CURRENT,
+            "_cart_names": _NAMES,
+            "_last_user_message": "номер 1 нужен",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [
+        {"id": 58289, "q": 1},
+        {"id": 999, "q": 1},
+    ]
+
+
+async def test_removal_keep_phrase_allowed(recorder, fake_mcp):
+    # «оставь только суп» — упомянут оставляемый товар, это законно
+    await tv.create_cart(
+        {
+            "products": [{"id": 58289, "quantity": 0}],
+            "_current_cart": _CURRENT,
+            "_cart_names": _NAMES,
+            "_last_user_message": "оставь только суп",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 60658, "q": 1}]
+
+
+def test_cart_names_from_history_block():
+    msgs = [
+        {"role": "assistant", "content": (
+            "Готово!\n\n[В корзине: id=58289 Печенье сдобное ×1; "
+            "id=48315 Суп с курицей ×2]"
+        )},
+        {"role": "user", "content": "ещё сыр"},
+    ]
+    assert tv.cart_names_from_history(msgs) == {
+        58289: "Печенье сдобное",
+        48315: "Суп с курицей",
+    }
