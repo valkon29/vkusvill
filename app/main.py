@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from app.mcp_client import MCPClientManager
 
 _WEB_DIR = Path(__file__).parent / "web"
 templates = Jinja2Templates(directory=_WEB_DIR / "templates")
+
+logging.basicConfig(level=logging.INFO)  # вызовы инструментов видны в journalctl
 
 mcp_manager = MCPClientManager(settings.mcp_url)
 agent = Agent(mcp_manager)
