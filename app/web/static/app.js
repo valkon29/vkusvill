@@ -56,7 +56,12 @@ function renderMessage(role, content) {
   bubble.className = "bubble";
   if (role === "bot") {
     bubble.classList.add("md");
-    bubble.innerHTML = renderMarkdown(content);
+    // служебные блоки [Показаны товары: …] / [В корзине: …] видит только LLM
+    const visible = String(content)
+      .replace(/\n*\[Показаны товары:[^\]]*\]/g, "")
+      .replace(/\n*\[В корзине:[^\]]*\]/g, "")
+      .trim();
+    bubble.innerHTML = renderMarkdown(visible);
   } else {
     bubble.textContent = content;
   }
@@ -218,6 +223,8 @@ async function send() {
   const { bubble } = startBotMessage();
   let answer = "";
   let lastChip = null;
+  let shownProducts = []; // id/названия карточек — для контекста следующего запроса
+  let cartItems = [];
 
   try {
     const resp = await fetch("/api/chat", {
@@ -253,8 +260,10 @@ async function send() {
           lastChip = renderToolChip(ev.data.label || ev.data.name);
         } else if (ev.type === "products") {
           renderProducts(ev.data.items || []);
+          shownProducts.push(...(ev.data.items || []));
         } else if (ev.type === "cart") {
           renderCart(ev.data);
+          cartItems.push(...(ev.data.items || []));
         } else if (ev.type === "error") {
           answer += `\n\n⚠ ${ev.data.message}`;
           appendToken(bubble, `\n\n⚠ ${ev.data.message}`);
@@ -269,7 +278,18 @@ async function send() {
   } finally {
     if (lastChip) lastChip.remove();
     finishBotMessage(bubble, answer);
-    history.push({ role: "assistant", content: answer || bubble.textContent });
+    // в историю добавляем служебный блок с id показанных товаров и корзины —
+    // по нему LLM на следующем ходу понимает, что такое «этот товар»
+    let content = answer || bubble.textContent;
+    const notes = [];
+    if (shownProducts.length) {
+      notes.push("[Показаны товары: " + shownProducts.map(p => `id=${p.id} ${p.name}`).join("; ") + "]");
+    }
+    if (cartItems.length) {
+      notes.push("[В корзине: " + cartItems.map(p => `id=${p.id} ${p.name} ×${p.quantity}`).join("; ") + "]");
+    }
+    if (notes.length) content += "\n\n" + notes.join("\n");
+    history.push({ role: "assistant", content });
     saveHistory();
     busy = false;
     sendEl.disabled = false;
