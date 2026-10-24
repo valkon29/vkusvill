@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Вкусный ассистент — ВкусВилл</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥑</text></svg>">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="logo">🥑 Вкусный ассистент</div>
+      <div class="subtitle">Помогу выбрать продукты во ВкусВилле и соберу корзину</div>
+      <button id="clear" class="clear-btn" title="Очистить диалог">Новый диалог</button>
+    </header>
+
+    <main id="chat" class="chat">
+      <div class="empty-state">
+        <div class="empty-emoji">🛒</div>
+        <p>Опишите, что нужно — например:</p>
+        <div class="examples">
+          <button class="example">Собери перекус на работу, бюджет 500 ₽, без лактозы</button>
+          <button class="example">Что приготовить на ужин из курицы максимум за 40 минут?</button>
+          <button class="example">Положи в корзину сырники, сметану и кофе</button>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <div class="input-row">
+        <textarea id="input" rows="1" placeholder="Например: перекус на работу до 500 ₽ без лактозы"
+          autofocus></textarea>
+        <button id="send" class="send-btn" title="Отправить">➤</button>
+      </div>
+      <div class="hint">Ассистент ищет реальные товары ВкусВилла через MCP. Цены могут отличаться от вашего региона.</div>
+    </footer>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
