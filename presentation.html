@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Вкусный ассистент — AI-помощник по продуктам ВкусВилла</title>
+<style>
+  :root {
+    --green: #1f9d55;
+    --green-dark: #14713d;
+    --green-light: #e8f6ee;
+    --ink: #1c2430;
+    --muted: #5b6673;
+    --bg: #fbfdfc;
+    --card: #ffffff;
+    --accent: #f2b705;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PT Sans", Arial, sans-serif;
+    background: var(--bg); color: var(--ink);
+    overflow: hidden;
+  }
+  .deck { position: relative; height: 100vh; }
+  .slide {
+    position: absolute; inset: 0;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    padding: 5vh 8vw;
+    max-width: 1200px; margin: 0 auto;
+  }
+  .slide.active { display: flex; animation: fade .35s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+  .kicker {
+    color: var(--green); font-weight: 700; text-transform: uppercase;
+    letter-spacing: .12em; font-size: .85rem; margin-bottom: 14px;
+  }
+  h1 { font-size: clamp(2.2rem, 5vw, 3.6rem); line-height: 1.15; }
+  h2 { font-size: clamp(1.6rem, 3.4vw, 2.4rem); margin-bottom: 28px; }
+  .sub { color: var(--muted); font-size: clamp(1rem, 1.8vw, 1.3rem); margin-top: 18px; max-width: 46rem; }
+  .big-emoji { font-size: clamp(3rem, 7vw, 5rem); margin-bottom: 24px; }
+
+  .grid { display: grid; gap: 18px; margin-top: 8px; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 800px) { .cols-2, .cols-3 { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--card); border: 1px solid #e2e9e4; border-radius: 14px;
+    padding: 20px 22px; box-shadow: 0 1px 3px rgba(28,36,48,.05);
+  }
+  .card h3 { font-size: 1.05rem; margin-bottom: 8px; }
+  .card p, .card li { color: var(--muted); font-size: .95rem; line-height: 1.5; }
+  .card ul { padding-left: 18px; }
+  .card li { margin-bottom: 6px; }
+  .card b { color: var(--ink); }
+  .card .icon { font-size: 1.6rem; margin-bottom: 10px; display: block; }
+
+  .tag {
+    display: inline-block; background: var(--green-light); color: var(--green-dark);
+    border-radius: 999px; padding: 4px 14px; font-size: .85rem; font-weight: 600; margin: 3px 4px 3px 0;
+  }
+
+  table { border-collapse: collapse; width: 100%; background: var(--card); border-radius: 12px; overflow: hidden; font-size: .92rem; }
+  th { background: var(--green-dark); color: #fff; text-align: left; padding: 10px 14px; font-weight: 600; }
+  td { padding: 9px 14px; border-bottom: 1px solid #edf2ee; color: var(--muted); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { color: var(--ink); font-weight: 600; white-space: nowrap; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .85em;
+    background: #f0f4f1; border-radius: 5px; padding: 2px 6px; color: var(--green-dark);
+  }
+
+  .pass { color: var(--green); font-weight: 700; }
+  .fail { color: #d64545; font-weight: 700; }
+
+  .demo-link {
+    display: inline-flex; align-items: center; gap: 12px;
+    background: var(--green); color: #fff; text-decoration: none;
+    padding: 14px 28px; border-radius: 12px; font-size: 1.15rem; font-weight: 700;
+    margin-top: 26px;
+  }
+
+  .arrow-flow { font-size: 1.6rem; color: var(--green); text-align: center; margin: 4px 0; }
+
+  .arch {
+    display: flex; flex-direction: column; gap: 6px; font-size: .95rem;
+  }
+  .arch-row { display: flex; align-items: stretch; gap: 6px; }
+  .arch-box {
+    flex: 1; background: var(--card); border: 1.5px solid #dbe7de; border-radius: 12px;
+    padding: 12px 16px; text-align: center;
+  }
+  .arch-box b { display: block; font-size: .98rem; }
+  .arch-box span { color: var(--muted); font-size: .82rem; line-height: 1.35; display: block; margin-top: 3px; }
+  .arch-box.hl { border-color: var(--green); background: var(--green-light); }
+  .arch-down { text-align: center; color: var(--green); font-size: 1.3rem; line-height: 1; }
+
+  .nav {
+    position: fixed; bottom: 18px; right: 24px; color: var(--muted);
+    font-size: .85rem; user-select: none;
+  }
+  .progress { position: fixed; bottom: 0; left: 0; height: 4px; background: var(--green); transition: width .3s; }
+  .hint { position: fixed; bottom: 18px; left: 24px; color: var(--muted); font-size: .8rem; }
+</style>
+</head>
+<body>
+<div class="deck">
+
+  <!-- 1. Титул -->
+  <section class="slide">
+    <div class="big-emoji">🥑</div>
+    <div class="kicker">Личный проект · МФТИ · VK Education · РК1</div>
+    <h1>Вкусный ассистент</h1>
+    <p class="sub">AI-помощник по выбору продуктов ВкусВилла: понимает свободную формулировку
+    («перекус на работу, бюджет 500 ₽, без лактозы»), ищет реальные товары, проверяет составы
+    и собирает корзину со ссылкой на vkusvill.ru.</p>
+    <p style="margin-top:34px">
+      <span class="tag">LLM-агент</span>
+      <span class="tag">MCP-интеграция</span>
+      <span class="tag">FastAPI + SSE</span>
+      <span class="tag">Eval 7/7</span>
+    </p>
+    <p class="sub" style="font-size:1rem">Валентин Коновалов · октябрь 2026 · защита 27.10</p>
+  </section>
+
+  <!-- 2. Задача и границы -->
+  <section class="slide">
+    <div class="kicker">Критерий 1 · Задача и границы</div>
+    <h2>Задача и границы</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <span class="icon">🎯</span>
+        <h3>Проблема</h3>
+        <p>В каталоге ВкусВилла тысячи позиций. Выбор под бюджет, диету или идею ужина —
+        это много шагов фильтрации и чтения составов. Ассистент снимает это: одна фраза —
+        готовая подборка или корзина.</p>
+      </div>
+      <div class="card">
+        <span class="icon">👤</span>
+        <h3>Сценарий пользователя</h3>
+        <ul>
+          <li>«Перекус на работу, до 500 ₽, без лактозы» → подборка + корзина</li>
+          <li>«Что приготовить на ужин из курицы до 40 минут?» → рецепты + ингредиенты</li>
+          <li>«Замени творог на безлактозный» → аналоги</li>
+          <li>«Что со скидками в молочном?» → акции</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">✅</span>
+        <h3>Входит в РК1</h3>
+        <ul>
+          <li>Универсальный чат: LLM сама решает, какие инструменты вызывать</li>
+          <li>7 инструментов через официальный MCP-сервер ВкусВилла</li>
+          <li>Сборка корзины с публичной ссылкой (без OAuth!)</li>
+          <li>Веб-сервис по публичному URL</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">🚧</span>
+        <h3>Не входит (roadmap)</h3>
+        <ul>
+          <li>OAuth 2.0 + PKCE: история заказов, персональные скидки, любимые продукты</li>
+          <li>Мультипользовательские аккаунты, оплата</li>
+          <li>LLM-судья в eval (детерминированных проверок достаточно для РК1)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Демо -->
+  <section class="slide">
+    <div class="kicker">Живое демо</div>
+    <h2>Демо</h2>
+    <div class="grid cols-2">
+      <div>
+        <p class="sub" style="margin-top:0">Сервис развёрнут и доступен публично.
+        Сценарий для показа:</p>
+        <div class="card" style="margin-top:16px">
+          <ol style="padding-left:20px; color:var(--muted); line-height:2">
+            <li>«Перекус на работу, до 500 ₽, без лактозы»</li>
+            <li>… ассистент ищет товары, проверяет составы, показывает карточки</li>
+            <li>«Положи в корзину первые два» → зелёная кнопка «Открыть корзину ВкусВилла»</li>
+            <li>«Что приготовить на ужин из курицы?» → рецепты</li>
+            <li>«Какие персональные скидки?» → честный отказ + альтернатива (roadmap)</li>
+          </ol>
+        </div>
+        <a class="demo-link" href="http://176.12.68.185" target="_blank">▶ Открыть http://176.12.68.185</a>
+      </div>
+      <div class="card">
+        <span class="icon">💬</span>
+        <h3>Как выглядит диалог</h3>
+        <ul>
+          <li>Стриминг ответа по SSE — токены появляются сразу</li>
+          <li>Чипы статусов: «Ищу товары…», «Проверяю состав…»</li>
+          <li><b>Карточки товаров</b> с фото, ценой, рейтингом — из результатов инструментов, не из текста LLM</li>
+          <li><b>Кнопка корзины</b> с суммой — прямая ссылка на vkusvill.ru</li>
+          <li>История чата — в localStorage, сервер stateless</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Архитектура -->
+  <section class="slide">
+    <div class="kicker">Критерий 2 · MCP-интеграция</div>
+    <h2>Архитектура</h2>
+    <div class="arch">
+      <div class="arch-row">
+        <div class="arch-box"><b>Браузер</b><span>vanilla JS, fetch + ReadableStream для SSE · история в localStorage</span></div>
+      </div>
+      <div class="arch-down">↓ POST /api/chat {messages} — stateless</div>
+      <div class="arch-row">
+        <div class="arch-box"><b>FastAPI</b><span>lifespan: единый MCPClientManager · SSE-стриминг ответа</span></div>
+      </div>
+      <div class="arch-down">↓</div>
+      <div class="arch-row">
+        <div class="arch-box hl"><b>Агентный цикл</b><span>до 6 итераций: LLM → tool_calls → результат → LLM → ответ</span></div>
+      </div>
+      <div class="arch-down">↓</div>
+      <div class="arch-row">
+        <div class="arch-box"><b>YandexGPT</b><span>OpenAI-совместимый API · стриминг + function calling</span></div>
+        <div class="arch-box hl"><b>Обёртки инструментов</b><span>7 шт. · валидация · зачистка токенов · события для UI</span></div>
+      </div>
+      <div class="arch-down">↓</div>
+      <div class="arch-row">
+        <div class="arch-box hl"><b>MCP-сервер ВкусВилла</b><span>mcp.vkusvill.ru/mcp · streamable HTTP · протокол 2025-03-26 · официальный SDK</span></div>
+      </div>
+    </div>
+    <p class="sub" style="font-size:.95rem">Единый агентный цикл используется и вебом, и eval-раннером — оценивается ровно то, что работает в проде.</p>
+  </section>
+
+  <!-- 5. MCP: обёртки -->
+  <section class="slide">
+    <div class="kicker">Критерий 2 · MCP-интеграция</div>
+    <h2>Почему обёртки, а не passthrough</h2>
+    <div class="grid cols-2" style="margin-bottom:22px">
+      <div class="card">
+        <h3>🔒 Токены и служебные параметры</h3>
+        <p><code>vkusvill_recipes</code> требует <b>9 обязательных аргументов</b> — LLM видит только
+        <code>query</code> и <code>exclude_allergens</code>, остальное заполняет обёртка.
+        Поиск отдаёт модели только id/название/цену, картинки уходят лишь в UI.</p>
+      </div>
+      <div class="card">
+        <h3>🛡 Инварианты в коде, а не в промпте</h3>
+        <p><code>create_cart</code> дедуплицирует позиции, ограничивает 1–20 товаров и количество
+        0.01–40, пересчитывает сумму через <code>product_details</code>. Промпт модель может
+        нарушить — код нет.</p>
+      </div>
+    </div>
+    <table>
+      <tr><th>Инструмент LLM</th><th>MCP-инструмент</th><th>Что делает обёртка</th></tr>
+      <tr><td>search_products</td><td>vkusvill_products_search</td><td>mode=custom (+фото), limit ≤ 10</td></tr>
+      <tr><td>get_product_details</td><td>vkusvill_product_details</td><td>состав и КБЖУ — проверка аллергенов</td></tr>
+      <tr><td>find_product_analogs</td><td>vkusvill_product_analogs</td><td>замены «на безлактозное»</td></tr>
+      <tr><td>search_discounted_products</td><td>vkusvill_products_discount</td><td>акции: карта / количество</td></tr>
+      <tr><td>find_recipes</td><td>vkusvill_recipes</td><td>заполняет 9 параметров, кэш id аллергенов</td></tr>
+      <tr><td>find_shops</td><td>vkusvill_shops</td><td>адреса и часы работы</td></tr>
+      <tr><td>create_cart</td><td>vkusvill_cart_link_create</td><td>дедуп, валидация, пересчёт суммы</td></tr>
+    </table>
+  </section>
+
+  <!-- 6. Отказоустойчивость -->
+  <section class="slide">
+    <div class="kicker">Критерий 2 · MCP-интеграция</div>
+    <h2>Отказоустойчивость вокруг MCP</h2>
+    <div class="grid cols-3">
+      <div class="card">
+        <span class="icon">⏱</span>
+        <h3>Rate limit 60 / 3 с</h3>
+        <p>Последовательные вызовы, <code>Semaphore(3)</code>, при 429 — пауза 3 с и ретрай.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🩹</span>
+        <h3>Auto-heal сессии</h3>
+        <p>Сервер stateless — переоткрытие всегда безопасно. После 3 попыток ошибка
+        возвращается LLM как <code>TOOL_ERROR</code> — модель извиняется и предлагает
+        альтернативу (кейс <code>source_down</code>).</p>
+      </div>
+      <div class="card">
+        <span class="icon">🤖</span>
+        <h3>Самокоррекция LLM</h3>
+        <p>Невалидный JSON в аргументах tool call возвращается модели как результат —
+        она исправляется на следующей итерации. Без падений запроса.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🧩</span>
+        <h3>Ошибки валидации не ретраятся</h3>
+        <p><code>-32602</code> (неверные аргументы) — сразу наверх, без бессмысленных повторов.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🚫</span>
+        <h3>OAuth-инструменты</h3>
+        <p>История заказов, персональные скидки, любимые продукты требуют OAuth 2.0 + PKCE —
+        проверено на живом сервере, без авторизации возвращают ошибку. Ассистент честно
+        отказывает и предлагает общие скидки. Roadmap.</p>
+      </div>
+      <div class="card">
+        <span class="icon">📡</span>
+        <h3>SSE без буферизации</h3>
+        <p>nginx: <code>proxy_buffering off</code>, <code>proxy_read_timeout 300s</code> —
+        стриминг токенов работает через прод-прокси.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. Сервис и хостинг -->
+  <section class="slide">
+    <div class="kicker">Критерий 3 · Сервис и хостинг</div>
+    <h2>Сервис и хостинг</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <span class="icon">⚙️</span>
+        <h3>Стек</h3>
+        <ul>
+          <li><b>Бэкенд:</b> Python, FastAPI, uvicorn</li>
+          <li><b>LLM:</b> YandexGPT (OpenAI-совместимый API) — стриминг + function calling</li>
+          <li><b>MCP:</b> официальный <code>mcp</code> SDK, streamable HTTP</li>
+          <li><b>Фронтенд:</b> vanilla JS + SSE, без сборки и фреймворков</li>
+          <li><b>Секреты:</b> pydantic-settings + <code>.env</code> (ключи не в репозитории)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">🖥</span>
+        <h3>Развёртывание</h3>
+        <ul>
+          <li><b>VPS</b> (Ubuntu 24.04), публичный URL: <code>http://176.12.68.185</code></li>
+          <li><b>systemd</b>-сервис: автозапуск, рестарт при сбоях</li>
+          <li><b>nginx</b> — проксирование + SSE без буферизации</li>
+          <li>SSH только по ключу; обновление прода — одна команда: <code>git pull &amp;&amp; systemctl restart</code></li>
+          <li>Рендер из РФ недоступен — выбор российского VPS осознанный</li>
+        </ul>
+      </div>
+    </div>
+    <p class="sub" style="font-size:.95rem">Сервер stateless: вся история чата приходит в запросе и хранится у клиента —
+    горизонтальное масштабирование без изменений кода.</p>
+  </section>
+
+  <!-- 8. Качество и воспроизводимость -->
+  <section class="slide">
+    <div class="kicker">Критерий 4 · Качество и воспроизводимость</div>
+    <h2>Тесты и eval</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <span class="icon">🧪</span>
+        <h3>Оффлайн-тесты (pytest, 18 шт.) — без ключей и сети</h3>
+        <ul>
+          <li>Агентный цикл: фрагментированные tool calls, невалидный JSON, лимит итераций</li>
+          <li>Обёртки: валидация корзины, дедуп, зачистка HTML-сущностей</li>
+          <li>SSE-эндпоинт и форма ответа</li>
+          <li>FakeLLM (скриптованные стримы) + FakeMCP (реальные формы ответов сервера)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">📊</span>
+        <h3>Eval — 7 кейсов на живых LLM + MCP</h3>
+        <ul>
+          <li>Детерминированные проверки по логу событий, без LLM-судьи</li>
+          <li>Анти-галлюцинации: id товаров в корзине обязаны быть из результатов инструментов</li>
+          <li>Отчёт: <code>docs/eval_report.md</code>, генерируется раннером</li>
+        </ul>
+      </div>
+    </div>
+    <table style="margin-top:22px">
+      <tr><th>Кейс</th><th>Проверка</th><th>Результат</th></tr>
+      <tr><td>budget_snack</td><td>корзина ≤ 500 ₽, в составах нет «лактоз»</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>recipe_dinner</td><td>find_recipes вызван, рецепт из результатов инструмента</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>discounts</td><td>у товаров old_price &gt; price</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>empty_result</td><td>«драконье яйцо»: честный отказ, без выдуманных данных</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>dietary_breakfast</td><td>завтрак без лактозы: составы проверены до корзины</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>clarification</td><td>«хочу поесть» → уточнение или разумный дефолт</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>source_down</td><td>MCP недоступен → вежливый отказ, без исключений</td><td class="pass">✅ PASS</td></tr>
+    </table>
+  </section>
+
+  <!-- 9. Найденные ошибки -->
+  <section class="slide">
+    <div class="kicker">Критерий 4 · Eval и разбор ошибок</div>
+    <h2>Найденные и исправленные ошибки</h2>
+    <div class="grid cols-3">
+      <div class="card">
+        <span class="icon">🛒</span>
+        <h3>1. Корзина не собиралась</h3>
+        <p>На «положи в корзину» модель переспрашивала «собрать?» вместо вызова
+        <code>create_cart</code>.<br><br><b>Фикс:</b> правило в промпте — при прямом запросе
+        перечислить состав и вызвать инструмент в том же ответе.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🥞</span>
+        <h3>2. Рецепты вместо товаров</h3>
+        <p>«Подбери завтрак без лактозы» → модель шла в <code>find_recipes</code>, получала
+        рецепты с лактозой и отказывалась. Правки промпта не помогали.<br><br>
+        <b>Фикс:</b> усилены <b>описания самих инструментов</b>. Вывод: выбор инструмента
+        LLM определяется в первую очередь их описаниями, а не системным промптом.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🤐</span>
+        <h3>3. Обещание без действия</h3>
+        <p>«Сейчас найду подходящие варианты…» — и конец ответа без вызова инструмента.<br><br>
+        <b>Фикс:</b> прямой запрет заканчивать ответ обещанием действия — обещание = сразу
+        выполнить его вызовом инструмента.</p>
+      </div>
+    </div>
+    <p class="sub" style="font-size:.95rem">Ограничения eval: проверки детерминированные (качество текста не оценивается),
+    кейсы — на живых данных ВкусВилла, бюджетные суммы могут флуктуировать.</p>
+  </section>
+
+  <!-- 10. Репозиторий -->
+  <section class="slide">
+    <div class="kicker">Критерий 4 · Воспроизводимость</div>
+    <h2>Репозиторий</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>📦 github.com/valkon29/vkusvill</h3>
+        <p>Публичный репозиторий: код, тесты, eval, документация, README с quick start.</p>
+        <ul style="margin-top:10px">
+          <li><code>app/</code> — агентный цикл, MCP-клиент, обёртки, веб-UI</li>
+          <li><code>evals/</code> — кейсы и раннер → <code>docs/eval_report.md</code></li>
+          <li><code>tests/</code> — оффлайн-тесты без ключей</li>
+          <li><code>docs/mcp_integration_schema.md</code> — схема MCP-интеграции</li>
+          <li><code>main.ipynb</code> — исследовательский ноутбук (ключи в <code>.env</code>)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>🚀 Запуск за 4 команды</h3>
+        <p style="line-height:1.9">
+          <code>python3.12 -m venv .venv</code><br>
+          <code>pip install -r requirements.txt</code><br>
+          <code>cp .env.example .env</code> <span style="opacity:.7"># вписать ключ</span><br>
+          <code>uvicorn app.main:app</code>
+        </p>
+        <p style="margin-top:12px">Тот же код развёрнут на проде — что тестируем,
+        то и показываем в демо.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11. Итоги -->
+  <section class="slide">
+    <div class="kicker">Итоги</div>
+    <h2>Итоги</h2>
+    <div class="grid cols-3">
+      <div class="card">
+        <span class="icon">✅</span>
+        <h3>Сделано</h3>
+        <ul>
+          <li>Работающий AI-ассистент с публичным URL</li>
+          <li>MCP-интеграция: 7 обёрток, ретраи, auto-heal</li>
+          <li>Стриминг ответа и карточки товаров</li>
+          <li>Корзина ВкусВилла по ссылке</li>
+          <li>18 оффлайн-тестов + eval 7/7</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">🧭</span>
+        <h3>Roadmap</h3>
+        <ul>
+          <li>OAuth 2.0 + PKCE: история заказов, персональные скидки, любимые продукты</li>
+          <li>LLM-судья для оценки качества текстов</li>
+          <li>Кэш поиска против rate limit</li>
+          <li>HTTPS и свой домен</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">🎓</span>
+        <h3>Что показал проект</h3>
+        <ul>
+          <li>LLM в основной бизнес-логике: выбор инструментов, самокоррекция</li>
+          <li>Описания инструментов важнее системного промпта</li>
+          <li>Инварианты — в коде обёрток, а не в промпте</li>
+          <li>Eval по логу событий ловит галлюцинации</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin-top:30px"><a class="demo-link" href="http://176.12.68.185" target="_blank">🥑 Вкусный ассистент · http://176.12.68.185</a></p>
+    <p class="sub" style="font-size:.95rem">Спасибо! Вопросы?</p>
+  </section>
+
+</div>
+<div class="hint">← → / клик — листать слайды</div>
+<div class="nav"><span id="counter">1 / 11</span></div>
+<div class="progress" id="progress"></div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  let i = 0;
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('active', k === i));
+    document.getElementById('counter').textContent = (i + 1) + ' / ' + slides.length;
+    document.getElementById('progress').style.width = ((i + 1) / slides.length * 100) + '%';
+  }
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight', 'PageDown', ' '].includes(e.key)) show(i + 1);
+    if (['ArrowLeft', 'PageUp'].includes(e.key)) show(i - 1);
+    if (e.key === 'Home') show(0);
+    if (e.key === 'End') show(slides.length - 1);
+  });
+  document.addEventListener('click', e => {
+    if (e.target.closest('a')) return;
+    show(e.clientX > window.innerWidth / 2 ? i + 1 : i - 1);
+  });
+  show(0);
+</script>
+</body>
+</html>
