@@ -49,6 +49,15 @@ function buildEmptyState() {
 
 function scrollDown() { chatEl.scrollTop = chatEl.scrollHeight; }
 
+function stripServiceBlocks(s) {
+  // служебные блоки [Показаны товары: …] / [В корзине: …] видит только LLM —
+  // вырезаем при любом рендере (модель может скопировать блок в свой ответ)
+  return String(s)
+    .replace(/\n*\[Показаны товары:[^\]]*\]/g, "")
+    .replace(/\n*\[В корзине:[^\]]*\]/g, "")
+    .trim();
+}
+
 function renderMessage(role, content) {
   const row = document.createElement("div");
   row.className = `msg ${role}`;
@@ -56,12 +65,7 @@ function renderMessage(role, content) {
   bubble.className = "bubble";
   if (role === "bot") {
     bubble.classList.add("md");
-    // служебные блоки [Показаны товары: …] / [В корзине: …] видит только LLM
-    const visible = String(content)
-      .replace(/\n*\[Показаны товары:[^\]]*\]/g, "")
-      .replace(/\n*\[В корзине:[^\]]*\]/g, "")
-      .trim();
-    bubble.innerHTML = renderMarkdown(visible);
+    bubble.innerHTML = renderMarkdown(stripServiceBlocks(content));
   } else {
     bubble.textContent = content;
   }
@@ -95,7 +99,7 @@ function finishBotMessage(bubble, answer) {
   // финальный ответ перерисовываем как markdown (во время стрима — сырой текст)
   if (answer && answer.trim()) {
     bubble.classList.add("md");
-    bubble.innerHTML = renderMarkdown(answer);
+    bubble.innerHTML = renderMarkdown(stripServiceBlocks(answer));
   }
 }
 
