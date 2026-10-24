@@ -254,50 +254,6 @@
     </table>
   </section>
 
-  <!-- 6. Отказоустойчивость -->
-  <section class="slide">
-    <div class="kicker">MCP-интеграция</div>
-    <h2>Отказоустойчивость вокруг MCP</h2>
-    <div class="grid cols-3">
-      <div class="card">
-        <span class="icon">⏱</span>
-        <h3>Rate limit 60 / 3 с</h3>
-        <p>Последовательные вызовы, <code>Semaphore(3)</code>, при 429 — пауза 3 с и ретрай.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🩹</span>
-        <h3>Auto-heal сессии</h3>
-        <p>Сервер stateless — переоткрытие всегда безопасно. После 3 попыток ошибка
-        возвращается LLM как <code>TOOL_ERROR</code> — модель извиняется и предлагает
-        альтернативу (кейс <code>source_down</code>).</p>
-      </div>
-      <div class="card">
-        <span class="icon">🤖</span>
-        <h3>Самокоррекция LLM</h3>
-        <p>Невалидный JSON в аргументах tool call возвращается модели как результат —
-        она исправляется на следующей итерации. Без падений запроса.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🧩</span>
-        <h3>Ошибки валидации не ретраятся</h3>
-        <p><code>-32602</code> (неверные аргументы) — сразу наверх, без бессмысленных повторов.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🚫</span>
-        <h3>OAuth-инструменты</h3>
-        <p>История заказов, персональные скидки, любимые продукты требуют OAuth 2.0 + PKCE —
-        проверено на живом сервере, без авторизации возвращают ошибку. Ассистент честно
-        отказывает и предлагает общие скидки. Roadmap.</p>
-      </div>
-      <div class="card">
-        <span class="icon">📡</span>
-        <h3>SSE без буферизации</h3>
-        <p>nginx: <code>proxy_buffering off</code>, <code>proxy_read_timeout 300s</code> —
-        стриминг токенов работает через прод-прокси.</p>
-      </div>
-    </div>
-  </section>
-
   <!-- 7. Сервис и хостинг -->
   <section class="slide">
     <div class="kicker">Сервис и хостинг</div>
