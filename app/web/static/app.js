@@ -54,7 +54,12 @@ function renderMessage(role, content) {
   row.className = `msg ${role}`;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = content;
+  if (role === "bot") {
+    bubble.classList.add("md");
+    bubble.innerHTML = renderMarkdown(content);
+  } else {
+    bubble.textContent = content;
+  }
   row.appendChild(bubble);
   chatEl.appendChild(row);
   scrollDown();
@@ -79,9 +84,64 @@ function appendToken(bubble, text) {
   scrollDown();
 }
 
-function finishBotMessage(bubble) {
+function finishBotMessage(bubble, answer) {
   const cursor = bubble.querySelector(".cursor");
   if (cursor) cursor.remove();
+  // финальный ответ перерисовываем как markdown (во время стрима — сырой текст)
+  if (answer && answer.trim()) {
+    bubble.classList.add("md");
+    bubble.innerHTML = renderMarkdown(answer);
+  }
+}
+
+// ---------- markdown (без зависимостей) ----------
+
+function renderMarkdown(src) {
+  const inline = s => s
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?;:])/g, "$1<i>$2</i>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+
+  let html = "";
+  let list = null; // "ul" | "ol"
+  let para = [];
+  const flushPara = () => {
+    if (para.length) { html += `<p>${para.map(inline).join("<br>")}</p>`; para = []; }
+  };
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+
+  for (const line of escapeHtml(src).split("\n")) {
+    const t = line.trim();
+    if (!t) { flushPara(); closeList(); continue; }
+    const h = t.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      flushPara(); closeList();
+      const lvl = Math.min(h[1].length + 2, 5); // # → h3
+      html += `<h${lvl}>${inline(h[2])}</h${lvl}>`;
+      continue;
+    }
+    if (/^(-{3,}|\*{3,})$/.test(t)) { flushPara(); closeList(); html += "<hr>"; continue; }
+    const ul = t.match(/^[-*•]\s+(.*)$/);
+    if (ul) {
+      flushPara();
+      if (list !== "ul") { closeList(); html += "<ul>"; list = "ul"; }
+      html += `<li>${inline(ul[1])}</li>`;
+      continue;
+    }
+    const ol = t.match(/^\d+[.)]\s+(.*)$/);
+    if (ol) {
+      flushPara();
+      if (list !== "ol") { closeList(); html += "<ol>"; list = "ol"; }
+      html += `<li>${inline(ol[1])}</li>`;
+      continue;
+    }
+    para.push(t);
+  }
+  flushPara();
+  closeList();
+  return html;
 }
 
 function renderToolChip(label) {
@@ -208,7 +268,7 @@ async function send() {
     }
   } finally {
     if (lastChip) lastChip.remove();
-    finishBotMessage(bubble);
+    finishBotMessage(bubble, answer);
     history.push({ role: "assistant", content: answer || bubble.textContent });
     saveHistory();
     busy = false;
