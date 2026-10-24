@@ -5,6 +5,7 @@ const chatEl = document.getElementById("chat");
 const inputEl = document.getElementById("input");
 const sendEl = document.getElementById("send");
 const STORAGE_KEY = "vv-chat";
+const CART_KEY = "vv-cart"; // последняя корзина — кнопка живёт и после перезагрузки
 
 let history = []; // [{role, content}]
 let busy = false;
@@ -16,6 +17,11 @@ function loadHistory() {
     history = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
   } catch { history = []; }
   history.forEach(m => renderMessage(m.role, m.content));
+  // восстановить кнопку последней корзины
+  try {
+    const cart = JSON.parse(localStorage.getItem(CART_KEY) || "null");
+    if (cart && cart.url) renderCart(cart);
+  } catch { /* битая запись — игнорируем */ }
 }
 
 function saveHistory() {
@@ -25,6 +31,7 @@ function saveHistory() {
 document.getElementById("clear").addEventListener("click", () => {
   history = [];
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(CART_KEY);
   chatEl.innerHTML = "";
   chatEl.appendChild(buildEmptyState());
 });
@@ -272,6 +279,7 @@ async function send() {
         } else if (ev.type === "cart") {
           renderCart(ev.data);
           cartItems.push(...(ev.data.items || []));
+          localStorage.setItem(CART_KEY, JSON.stringify(ev.data));
         } else if (ev.type === "error") {
           answer += `\n\n⚠ ${ev.data.message}`;
           appendToken(bubble, `\n\n⚠ ${ev.data.message}`);

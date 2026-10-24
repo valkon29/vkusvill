@@ -194,3 +194,16 @@ async def test_cart_mention_without_claim_no_retry(recorder, fake_mcp):
 
     assert not [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
     assert len(agent._llm.requests) == 1
+
+
+def test_cart_claim_regex_covers_link_promise():
+    from app.agent import _CART_CLAIM_RE
+
+    assert _CART_CLAIM_RE.search("Суп добавлен в корзину. Итоговая сумма: 651 рубль.")
+    assert _CART_CLAIM_RE.search(
+        "Ссылка на корзину ВкусВилла появится под моим сообщением."
+    )
+    assert _CART_CLAIM_RE.search("Я убрал печенье из корзины.")
+    # вопросы о состоянии корзины — не утверждения
+    assert not _CART_CLAIM_RE.search("Сейчас в корзине печенье и суп. Итого 651 рубль.")
+    assert not _CART_CLAIM_RE.search("Что положить в корзину?")
