@@ -207,7 +207,7 @@ class Agent:
             )
             for c in calls.values():
                 used_tools.add(c["name"])
-                logger.info("Вызов инструмента %s", c["name"])
+                logger.info("Вызов инструмента %s: %s", c["name"], c["args"][:300])
                 await emit("tool", {"name": c["name"], "label": TOOL_LABELS.get(c["name"], c["name"])})
                 result = await self._execute(c["name"], c["args"], emit, cart)
                 # полный результат инструмента — для eval и отладки (UI игнорирует)
