@@ -196,14 +196,40 @@ async def test_cart_mention_without_claim_no_retry(recorder, fake_mcp):
     assert len(agent._llm.requests) == 1
 
 
-def test_cart_claim_regex_covers_link_promise():
-    from app.agent import _CART_CLAIM_RE
+def test_cart_claim_regexes():
+    from app.agent import _CART_CLAIM_RE, _CART_LINK_RE
 
     assert _CART_CLAIM_RE.search("Суп добавлен в корзину. Итоговая сумма: 651 рубль.")
-    assert _CART_CLAIM_RE.search(
-        "Ссылка на корзину ВкусВилла появится под моим сообщением."
-    )
     assert _CART_CLAIM_RE.search("Я убрал печенье из корзины.")
     # вопросы о состоянии корзины — не утверждения
     assert not _CART_CLAIM_RE.search("Сейчас в корзине печенье и суп. Итого 651 рубль.")
     assert not _CART_CLAIM_RE.search("Что положить в корзину?")
+
+    assert _CART_LINK_RE.search(
+        "Ссылка на корзину ВкусВилла появится под моим сообщением."
+    )
+    assert not _CART_LINK_RE.search("Вот ссылка на корзину.")
+
+
+async def test_link_promise_rebuilds_cart_directly(recorder, fake_mcp):
+    # модель обещает ссылку без вызова — агент пересобирает корзину сам,
+    # без второго захода к LLM, с точными количествами из контекста
+    agent = make_agent(
+        [[FakeChunk(content="Ссылка на корзину появится под сообщением.")]],
+        fake_mcp,
+    )
+    messages = [
+        {"role": "user", "content": "можно ссылку на корзину"},
+        {"role": "assistant", "content": "Ранее собрано.\n\n[В корзине: id=114976 Сырники ×2]"},
+    ]
+    await agent.run(messages, recorder)
+
+    # к LLM был только один запрос — пересборка прошла без модели
+    assert len(agent._llm.requests) == 1
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 114976, "q": 2}]
+
+    # событие корзины ушло в UI
+    cart_events = [d for t, d in recorder.events if t == "cart"]
+    assert len(cart_events) == 1
+    assert cart_events[0]["total"] == 612  # 306 × 2

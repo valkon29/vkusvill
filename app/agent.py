@@ -29,8 +29,7 @@ from app.tools.vkusvill import (
 
 logger = logging.getLogger(__name__)
 
-# Ответ утверждает изменение корзины («добавлено в корзину», «убрал из корзины»)
-# или обещает ссылку на неё — без вызова create_cart это ложь.
+# Ответ утверждает изменение корзины («добавлено в корзину», «убрал из корзины»).
 # Только утвердившиеся формы: инфинитивы («положить в корзину?» — вопрос) не считаются.
 _CART_CLAIM_RE = re.compile(
     r"(?:добавлен(?:а|о|ы)?|добавл(?:ю|им|ила?|ишь)"
@@ -38,8 +37,12 @@ _CART_CLAIM_RE = re.compile(
     r"|собран(?:а|о|ы)?|собрал(?:а|о|и)?|собер(?:у|ёшь|ём|ет)"
     r"|убран(?:а|о|ы)?|убрал(?:а|о|и)?|убер(?:у|ёшь|ём|ет)"
     r"|удалён(?:а|о|ы)?|удален(?:а|о|ы)?|удал(?:ил|ю|им))"
-    r"[^\n]{0,60}корзин"
-    r"|ссылк\w*\s+на\s+корзину[^\n]{0,40}появ",
+    r"[^\n]{0,60}корзин",
+    re.IGNORECASE,
+)
+# Обещание ссылки на корзину без вызова create_cart
+_CART_LINK_RE = re.compile(
+    r"ссылк\w*\s+на\s+корзину[^\n]{0,40}появ",
     re.IGNORECASE,
 )
 # Принудительная поправка, когда модель объявила изменение корзины или
@@ -142,17 +145,50 @@ class Agent:
 
             if not calls:
                 text = "".join(content_parts)
-                # Гарантия: утверждение об изменении корзины без вызова
-                # create_cart — принудительный второй заход за реальным вызовом
-                if text and "create_cart" not in used_tools and _CART_CLAIM_RE.search(text):
-                    logger.info(
-                        "Модель объявила изменение корзины без create_cart — "
-                        "принудительный запрос вызова"
-                    )
-                    await emit("token", {"text": "\n\n_Оформляю корзину…_"})
-                    convo.append({"role": "assistant", "content": text})
-                    convo.append({"role": "user", "content": _CART_FORCED_NUDGE})
-                    continue
+                # Гарантия: обещание корзины без вызова create_cart не проходит
+                if text and "create_cart" not in used_tools:
+                    if _CART_CLAIM_RE.search(text):
+                        logger.info(
+                            "Модель объявила изменение корзины без create_cart — "
+                            "принудительный запрос вызова"
+                        )
+                        await emit("token", {"text": "\n\n_Оформляю корзину…_"})
+                        convo.append({"role": "assistant", "content": text})
+                        convo.append({"role": "user", "content": _CART_FORCED_NUDGE})
+                        continue
+                    if _CART_LINK_RE.search(text) and cart:
+                        # обещана ссылка — пересобираем текущую корзину напрямую,
+                        # без LLM: состав и количества детерминированы
+                        logger.info("Пересборка корзины напрямую по обещанию ссылки")
+                        await emit(
+                            "tool",
+                            {"name": "create_cart",
+                             "label": TOOL_LABELS.get("create_cart", "create_cart")},
+                        )
+                        result = await self._execute(
+                            "create_cart",
+                            json.dumps(
+                                {
+                                    "products": [
+                                        {"id": c["id"], "quantity": c["quantity"]}
+                                        for c in cart
+                                    ],
+                                    "replace": True,
+                                }
+                            ),
+                            emit,
+                            [],
+                        )
+                        await emit(
+                            "tool_result", {"name": "create_cart", "result": result}
+                        )
+                        if not result.startswith("TOOL_ERROR"):
+                            return
+                        # прямая пересборка не удалась — пусть модель разбирается
+                        await emit("token", {"text": "\n\n_Оформляю корзину…_"})
+                        convo.append({"role": "assistant", "content": text})
+                        convo.append({"role": "user", "content": _CART_FORCED_NUDGE})
+                        continue
                 return  # финальный ответ — только текст
 
             convo.append(
