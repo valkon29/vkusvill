@@ -214,6 +214,46 @@ def test_cart_claim_regexes():
     assert not _CART_LINK_RE.search("Вот ссылка на корзину.")
 
 
+def test_cart_claim_questions_not_claims():
+    # вопрос/предложение модели — не утверждение об изменении корзины
+    from app.agent import _is_cart_claim
+
+    assert not _is_cart_claim(
+        "Хотите, чтобы я собрал корзину из ингредиентов этого рецепта?"
+    )
+    assert not _is_cart_claim("Хотите, я соберу корзину из этих продуктов?")
+    assert not _is_cart_claim(
+        "Готовлю рецепт. Хотите, чтобы я добавила говядину в корзину?"
+    )
+    # утверждения — остаются утверждениями
+    assert _is_cart_claim("Суп добавлен в корзину. Итоговая сумма: 651 рубль.")
+    assert _is_cart_claim("Я убрал печенье из корзины.")
+    assert _is_cart_claim("В корзину добавлен суп «Рассольник» по цене 488 руб.")
+    # утверждение + вопрос в одном предложении — это всё ещё утверждение
+    assert _is_cart_claim("Я добавила суп в корзину, хотите ещё что-нибудь?")
+
+
+async def test_cart_question_no_forced_retry(recorder, fake_mcp):
+    # модель задаёт вопрос про корзину (не утверждает изменение) —
+    # принудительный повтор не нужен
+    agent = make_agent(
+        [[FakeChunk(content=(
+            "Вот рецепт мясного салата. Хотите, чтобы я собрал корзину "
+            "из ингредиентов этого рецепта?"
+        ))]],
+        fake_mcp,
+    )
+    await agent.run(
+        [{"role": "user", "content": "посоветуй рецепт мясного салата"}], recorder
+    )
+
+    # один запрос к LLM, без nudge и без вызова корзины
+    assert len(agent._llm.requests) == 1
+    assert not [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+    text = "".join(d["text"] for t, d in recorder.events if t == "token")
+    assert "Оформляю корзину" not in text
+
+
 async def test_sequential_create_cart_calls_accumulate(recorder, fake_mcp):
     # модель дважды вызвала create_cart за один ход — второй вызов обязан
     # объединиться с результатом первого, а не затереть его
