@@ -45,7 +45,7 @@ function buildEmptyState() {
     <div class="empty-emoji">🛒</div>
     <p>Опишите, что нужно — например:</p>
     <div class="examples">
-      <button class="example">Собери перекус на работу, бюджет 500 ₽, без лактозы</button>
+      <button class="example">Собери полноценный обед</button>
       <button class="example">Что приготовить на ужин из курицы максимум за 40 минут?</button>
       <button class="example">Положи в корзину сырники, сметану и кофе</button>
     </div>`;
