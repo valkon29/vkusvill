@@ -232,7 +232,7 @@ presentation.html  # интерактивная презентация для з
 id, URL), субъективное качество текста не оценивается; кейсы гоняются по
 живым данным ВкусВилла — бюджетные суммы могут флуктуировать.
 
-## Список использованных инструментов
+## Стек технологий
 
 - [Model Context Protocol](https://modelcontextprotocol.io) — спецификация протокола
 - [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) — клиентская библиотека
