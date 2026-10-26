@@ -40,6 +40,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Вкусный ассистент", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_cache_ui(request: Request, call_next):
+    """index.html и статика — с no-cache: браузер сверяет etag и сразу
+    подхватывает обновления после деплоя, иначе UI застревает на старой версии."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
