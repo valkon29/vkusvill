@@ -1,8 +1,13 @@
 """Прогон eval-кейсов: python -m evals.runner [--case budget_snack]
 
 Использует тот же агентный цикл, что и веб-сервис (без HTTP), с живыми
-LLM и MCP — кроме кейсов с подменённым MCP. Результат: таблица в stdout
-и отчёт docs/eval_report.md с логами падений.
+LLM и MCP — кроме кейсов с подменённым MCP. Результаты:
+  - таблица в stdout;
+  - docs/eval_report.md — таблица + полный лог каждого кейса
+    (промпты, вызовы инструментов с аргументами, ответы ВкусВилла,
+    финальные ответы модели, корзины);
+  - docs/showcase_lunch.md — эталонный разбор примера «от запроса до
+    корзины» для кейса lunch_showcase.
 """
 
 import argparse
@@ -16,6 +21,31 @@ from app.mcp_client import MCPClientManager
 
 from evals.cases import ALL_CASES, EvalCase
 
+# кейсы, для которых раннер пишет отдельный документ-разбор
+SHOWCASE_DOCS = {"lunch_showcase": "docs/showcase_lunch.md"}
+
+_SHOWCASE_INTRO = """# Эталонный пример: от запроса до корзины
+
+Автогенерируется раннером eval из фактического лога прогона — всё ниже
+реальные ответы модели и данные ВкусВилла на момент прогона.
+
+**Запрос покупателя (3 хода):**
+
+1. «Собери полноценный обед для одного взрослого человека. Сразу собери корзину.»
+2. «Замени салат на винегрет»
+3. «Сколько углеводов суммарно содержится в продуктах из корзины?»
+
+**Что считается подходящим результатом** (проверяется детерминированно):
+
+- после хода 1 собрана корзина (≥ 3 позиций: основное + гарнир/овощи + напиток),
+  все id — из результатов инструментов, ссылка ведёт на vkusvill.ru;
+- после хода 2 винегрет в корзине, салата нет (если был), остальные позиции
+  хода 1 сохранились — корзина только накапливается;
+- в ходе 3 по каждой позиции корзины запрошен свежий состав/КБЖУ
+  (get_product_details), суммарные углеводы в ответе сходятся с пересчётом
+  по весу упаковок из ответов ВкусВилла (допуск ±30% на округления).
+"""
+
 
 class Recorder:
     def __init__(self):
@@ -26,31 +56,138 @@ class Recorder:
 
 
 async def run_case(case: EvalCase, mcp) -> tuple[Recorder, list[dict]]:
-    """Прогоняет промпты кейса подряд, возвращает лог событий и историю."""
+    """Прогоняет промпты кейса подряд, возвращает лог событий и историю.
+
+    Перед каждым промптом в лог ставится маркер хода ("turn", ...) — по нему
+    проверки и отчёт нарезают диалог на ходы. В ответ ассистента дописываются
+    служебные блоки состояния — ровно то, что делает веб-фронтенд (app.js):
+    [Показаны товары: …] и [В корзине: …]. Без них многоходовые кейсы бегут
+    с пустой корзиной (состояние корзины живёт в истории клиента)."""
     recorder = Recorder()
     history: list[dict] = []
     agent = Agent(mcp)
     for prompt in case.prompts:
+        recorder.events.append(("turn", {"prompt": prompt}))
+        turn_start = len(recorder.events)
         history.append({"role": "user", "content": prompt})
         await agent.run(history, recorder)
-        # ответ ассистента добавляем по собранным токенам последнего хода
-        # (agent.run не мутирует history — собираем сами)
-        tail_tokens = []
-        # берём токены после последнего user-события проще: перезапустим лог
-        # ниже; здесь достаточно последнего фрагмента
-        history.append({"role": "assistant", "content": _last_answer(recorder)})
+        # agent.run не мутирует history — ответ ассистента собираем сами
+        history.append({
+            "role": "assistant",
+            "content": _answer_with_context(
+                recorder.events[turn_start:], _last_answer(recorder)
+            ),
+        })
     return recorder, history
 
 
+def _answer_with_context(turn_events: list[tuple[str, dict]], answer: str) -> str:
+    """Дописывает к ответу служебные блоки состояния — формат блока в точности
+    как в app/web/static/app.js (фронтенд — носитель состояния корзины)."""
+    notes = []
+    shown = [p for t, d in turn_events if t == "products" for p in d.get("items", [])]
+    if shown:
+        notes.append("[Показаны товары: " + "; ".join(
+            f"id={p['id']} {p.get('name') or ''}" for p in shown
+        ) + "]")
+    carts = [d for t, d in turn_events if t == "cart"]
+    if carts:
+        notes.append("[В корзине: " + "; ".join(
+            f"id={i['id']} {i.get('name') or ''} ×{i.get('quantity', 1)}"
+            for i in carts[-1].get("items", [])
+        ) + "]")
+    return answer + ("\n\n" + "\n".join(notes) if notes else "")
+
+
 def _last_answer(recorder: Recorder) -> str:
-    """Текст после последнего события tool_result (финальный ответ хода)."""
+    """Текст после последнего tool_result ИЛИ маркера хода — финальный
+    ответ текущего хода (в ходе без вызовов инструментов не должен
+    подтягивать ответ предыдущего хода)."""
     tokens: list[str] = []
     for t, d in recorder.events:
-        if t == "tool_result":
+        if t in ("tool_result", "turn"):
             tokens = []
         elif t == "token":
             tokens.append(d["text"])
     return "".join(tokens).strip()
+
+
+def _render_events(events: list[tuple[str, dict]]) -> list[str]:
+    """Человекочитаемая трассировка хода: сохраняет порядок «модель сказала →
+    вызвала инструмент с параметрами → ВкусВилл вернул → корзина»."""
+    lines: list[str] = []
+    text_buf: list[str] = []
+
+    def flush_text():
+        if text_buf:
+            lines.append("")
+            lines.append("**Модель:**")
+            lines.append("")
+            lines.append("> " + "".join(text_buf).replace("\n", "\n> "))
+            lines.append("")
+            text_buf.clear()
+
+    for t, d in events:
+        if t == "token":
+            text_buf.append(d["text"])
+        elif t == "tool":
+            flush_text()
+            args = d.get("args", "")
+            lines.append(f"- `{d['name']}` — параметры: `{args or '{}'}`")
+        elif t == "tool_result":
+            preview = str(d["result"]).replace("\n", " ")
+            if len(preview) > 500:
+                preview = preview[:500] + "…"
+            lines.append(f"  - ВкусВилл вернул: `{preview}`")
+        elif t == "products":
+            names = "; ".join((i.get("name") or "?") for i in d.get("items", []))
+            lines.append(f"  - в чат показаны карточки: {names}")
+        elif t == "cart":
+            items = "; ".join(
+                f"{i.get('name') or i.get('id')} ×{i.get('quantity')} "
+                f"({(i.get('price') or 0):.0f} ₽)"
+                for i in d.get("items", [])
+            )
+            lines.append(f"  - **корзина**: {d.get('url')} — итого "
+                         f"**{d.get('total')} ₽**, позиций: {d.get('count')}")
+            lines.append(f"    - состав: {items}")
+        elif t == "error":
+            lines.append(f"- `error`: {d.get('message')}")
+    flush_text()
+    return lines
+
+
+def _render_case(case: EvalCase, failures: list[str], events) -> list[str]:
+    lines = [
+        f"## {case.name} — {'✅ PASS' if not failures else '❌ FAIL'}",
+        "",
+        f"_{case.description}_",
+        "",
+    ]
+    if failures:
+        lines += ["Нарушения:", *[f"- **{f}**" for f in failures], ""]
+    for idx, turn in enumerate(_split_turns(events), start=1):
+        prompt = turn[0][1].get("prompt", "")
+        lines += [f"### Ход {idx} — пользователь: «{prompt}»", ""]
+        body = turn[1:]
+        lines += _render_events(body) or ["_(нет событий)_"]
+        lines.append("")
+    return lines
+
+
+def _split_turns(events) -> list[list[tuple[str, dict]]]:
+    turns: list[list[tuple[str, dict]]] = []
+    current: list[tuple[str, dict]] = []
+    for ev in events:
+        if ev[0] == "turn":
+            if current:
+                turns.append(current)
+            current = [ev]
+        else:
+            current.append(ev)
+    if current:
+        turns.append(current)
+    return turns
 
 
 async def main() -> int:
@@ -89,6 +226,7 @@ async def main() -> int:
         await live_mcp.close()
 
     write_report(results)
+    _write_showcase_docs(results)
     failed = sum(1 for _, f, _ in results if f)
     print(f"\n{len(results) - failed}/{len(results)} кейсов пройдено. Отчёт: docs/eval_report.md")
     return 0 if not failed else 1
@@ -108,53 +246,12 @@ def write_report(results) -> None:
         status = "✅ PASS" if not failures else "❌ FAIL"
         lines.append(f"| {case.name} | {status} | {'; '.join(failures) or '—'} |")
     lines.append("")
-
     for case, failures, recorder in results:
-        if not failures or recorder is None:
+        if recorder is None:
+            lines += [f"## {case.name} — ❌ CRASH", "", "Агент упал, лога нет.", ""]
             continue
-        lines += [
-            f"## Разбор ошибок: {case.name}",
-            "",
-            f"_{case.description}_",
-            "",
-            f"Промпт(ы): {' / '.join(repr(p) for p in case.prompts)}",
-            "",
-            "Нарушения:",
-            *[f"- {f}" for f in failures],
-            "",
-            "Лог событий:",
-        ]
-        for t, d in recorder.events:
-            if t == "tool_result":
-                preview = str(d["result"])[:300].replace("\n", " ")
-                lines.append(f"- `tool_result` **{d['name']}**: {preview}")
-            elif t == "cart":
-                lines.append(f"- `cart`: {d['url']} — {d['total']} ₽")
-            elif t == "token":
-                lines.append(f"- `token`: {d['text'][:120]!r}")
-            else:
-                lines.append(f"- `{t}`: {str(d)[:120]}")
-        lines.append("")
-
+        lines += _render_case(case, failures, recorder.events)
     lines += [
-        "## Найденные и исправленные ошибки (итерации прогона)",
-        "",
-        "### 1. Модель не собирала корзину после прямого запроса",
-        "«Положи в корзину…» → модель переспрашивала «собрать корзину?» вместо вызова ",
-        "create_cart. **Исправление:** правило в системном промпте — при прямом запросе ",
-        "перечислить состав и сразу вызвать create_cart в том же ответе.",
-        "",
-        "### 2. dietary_breakfast: модель шла в рецепты вместо товаров",
-        "На «Подбери завтрак без лактозы и собери корзину» модель вызывала find_recipes, ",
-        "получала рецепты с лактозой и отказывалась помогать. Системный промпт не помогал. ",
-        "**Исправление:** усилены описания самих инструментов (search_products — для ",
-        "«подбери завтрак/перекус», find_recipes — «только про готовку») — выбор ",
-        "инструмента у LLM определяется в первую очередь их описаниями.",
-        "",
-        "### 3. Модель обещала действие и заканчивала ход",
-        "«Сейчас найду подходящие варианты…» — и конец ответа без вызова инструмента. ",
-        "**Исправление:** запрет в промпте заканчивать ответ обещанием действия.",
-        "",
         "## Ограничения",
         "",
         "- Проверки детерминированные (суммы, составы, источники id, URL корзин); ",
@@ -162,10 +259,25 @@ def write_report(results) -> None:
         "- Кейсы гоняются по живым данным ВкусВилла: цены и ассортимент меняются,",
         "  поэтому бюджетные проверки могут флуктуировать.",
         "- LLM-судья не используется — осознанное ограничение объёма РК1.",
+        "",
+        "Исторический разбор найденных и исправленных ошибок — в README.md.",
     ]
 
     with open("docs/eval_report.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _write_showcase_docs(results) -> None:
+    for case, failures, recorder in results:
+        path = SHOWCASE_DOCS.get(case.name)
+        if not path or recorder is None:
+            continue
+        status = "✅ Все проверки пройдены" if not failures else "❌ Есть нарушения"
+        lines = [_SHOWCASE_INTRO, f"**Прогон:** {status}", ""]
+        lines += _render_case(case, failures, recorder.events)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"Разбор примера: {path}")
 
 
 if __name__ == "__main__":
