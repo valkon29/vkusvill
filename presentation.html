@@ -123,7 +123,7 @@
       <span class="tag">MCP-интеграция</span>
       <span class="tag">FastAPI + SSE</span>
     </p>
-    <p class="sub" style="font-size:1rem">Валентин Коновалов · октябрь 2026</p>
+    <p class="sub" style="font-size:1rem">Валентин Коновалов · ноябрь 2026</p>
   </section>
 
   <!-- 2. Задача и границы -->
@@ -243,7 +243,7 @@
     <table>
       <tr><th>Инструмент LLM</th><th>MCP-инструмент</th><th>Что делает обёртка</th></tr>
       <tr><td>search_products</td><td>vkusvill_products_search</td><td>mode=custom (+фото), limit ≤ 10</td></tr>
-      <tr><td>get_product_details</td><td>vkusvill_product_details</td><td>состав и КБЖУ — проверка аллергенов</td></tr>
+      <tr><td>get_product_details</td><td>vkusvill_product_details</td><td>состав и КБЖУ — проверка аллергенов; углеводы на упаковку (<code>carbs_in_package_g</code>) считает код</td></tr>
       <tr><td>find_product_analogs</td><td>vkusvill_product_analogs</td><td>замены «на безлактозное»</td></tr>
       <tr><td>search_discounted_products</td><td>vkusvill_products_discount</td><td>акции: карта / количество</td></tr>
       <tr><td>find_recipes</td><td>vkusvill_recipes</td><td>заполняет 9 параметров, кэш id аллергенов</td></tr>
@@ -252,7 +252,45 @@
     </table>
   </section>
 
-  <!-- 6. Сервис и хостинг -->
+  <!-- 6. Разбор примера: от запроса до корзины -->
+  <section class="slide">
+    <div class="kicker">Разбор примера</div>
+    <h2>От запроса до корзины: три хода</h2>
+    <div class="grid cols-3">
+      <div class="card">
+        <span class="icon">🍲</span>
+        <h3>«Собери полноценный обед»</h3>
+        <ul>
+          <li>4 × <code>search_products</code>: «первое блюдо», «второе блюдо», «салат», «напиток» — <b>модель сама разложила обед на категории</b></li>
+          <li><code>create_cart</code> — 4 позиции с реальными id из выдачи</li>
+          <li>Итог: <b>854 ₽</b> — суп, котлета с пюре, салат «Витаминный», напиток</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">🔄</span>
+        <h3>«Замени салат на винегрет»</h3>
+        <ul>
+          <li><code>search_products</code> «Винегрет» → id 20665</li>
+          <li><code>create_cart</code>: салат (id 34835) заменён, остальные 3 позиции переданы как есть</li>
+          <li>Итог: <b>822 ₽</b>, ничего не потерялось — накопление в коде, не в промпте</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="icon">🍞</span>
+        <h3>«Сколько углеводов?»</h3>
+        <ul>
+          <li>4 × <code>get_product_details</code> — по каждой позиции корзины</li>
+          <li>Из каждого ответа — готовое поле <code>carbs_in_package_g</code>: углеводы на упаковку считает обёртка (КБЖУ на 100 г × вес)</li>
+          <li>Итог: <b>100,6 г</b> — сходится с детерминированным пересчётом</li>
+        </ul>
+      </div>
+    </div>
+    <p class="sub" style="font-size:.95rem">Решения «какие запросы и что положить» принимает модель; арифметику (сумма корзины,
+    углеводы на упаковку) делает код. Полная трассировка с ответами ВкусВилла:
+    <code>docs/showcase_lunch.md</code> — генерируется eval-раннером из фактического лога.</p>
+  </section>
+
+  <!-- 7. Сервис и хостинг -->
   <section class="slide">
     <div class="kicker">Сервис и хостинг</div>
     <h2>Сервис и хостинг</h2>
@@ -283,34 +321,36 @@
     горизонтальное масштабирование без изменений кода.</p>
   </section>
 
-  <!-- 7. Качество и воспроизводимость -->
+  <!-- 8. Качество и воспроизводимость -->
   <section class="slide">
     <div class="kicker">Качество и воспроизводимость</div>
     <h2>Тесты и eval</h2>
     <div class="grid cols-2">
       <div class="card">
         <span class="icon">🧪</span>
-        <h3>Оффлайн-тесты (pytest, 42 шт.) — без ключей и сети</h3>
+        <h3>Оффлайн-тесты (pytest, 71 шт.) — без ключей и сети</h3>
         <ul>
           <li>Агентный цикл: фрагментированные tool calls, невалидный JSON, лимит итераций</li>
           <li>Инварианты корзины: накопление, удаление quantity=0, защита от подмены, удаление умолчанием</li>
-          <li>SSE-эндпоинт и форма ответа</li>
+          <li>Проверки eval на синтетических логах — включая тесты на ложные срабатывания</li>
           <li>FakeLLM (скриптованные стримы) + FakeMCP (реальные формы ответов сервера)</li>
         </ul>
       </div>
       <div class="card">
         <span class="icon">📊</span>
-        <h3>Eval — 7 кейсов на живых LLM + MCP</h3>
+        <h3>Eval — 8 кейсов на живых LLM + MCP</h3>
         <ul>
           <li>Детерминированные проверки по логу событий, без LLM-судьи</li>
+          <li><b>Честные проверки корзины:</b> нет корзины — проверка падает, а не проходит «циклом по пустому списку»; непроверенный состав и названные «свои» суммы — нарушения</li>
           <li>Анти-галлюцинации: id товаров в корзине обязаны быть из результатов инструментов</li>
-          <li>Отчёт: <code>docs/eval_report.md</code>, генерируется раннером</li>
+          <li>Отчёты: <code>docs/eval_report.md</code> + разбор примера <code>docs/showcase_lunch.md</code></li>
         </ul>
       </div>
     </div>
     <table style="margin-top:22px">
       <tr><th>Кейс</th><th>Проверка</th><th>Результат</th></tr>
-      <tr><td>budget_snack</td><td>корзина ≤ 500 ₽, в составах нет «лактоз»</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>lunch_showcase</td><td>3 хода: обед → замена салата на винегрет → суммарные углеводы (пересчёт по весу упаковок)</td><td class="pass">✅ PASS</td></tr>
+      <tr><td>budget_snack</td><td>корзина ≤ 500 ₽, в составах нет «лактоз», составы проверены до корзины</td><td class="pass">✅ PASS</td></tr>
       <tr><td>recipe_dinner</td><td>find_recipes вызван, рецепт из результатов инструмента</td><td class="pass">✅ PASS</td></tr>
       <tr><td>discounts</td><td>у товаров old_price &gt; price</td><td class="pass">✅ PASS</td></tr>
       <tr><td>empty_result</td><td>«драконье яйцо»: честный отказ, без выдуманных данных</td><td class="pass">✅ PASS</td></tr>
@@ -320,7 +360,7 @@
     </table>
   </section>
 
-  <!-- 8. Найденные ошибки -->
+  <!-- 9. Найденные ошибки -->
   <section class="slide">
     <div class="kicker">Eval и разбор ошибок</div>
     <h2>Найденные и исправленные ошибки</h2>
@@ -340,12 +380,20 @@
           <td>сверка удаляемого с репликой пользователя, подтверждение через confirm_removals</td></tr>
       <tr><td>Передавала состав без удаляемого товара — винегрет оставался в корзине</td><td>прод</td>
           <td>автосъём по названию: «убери винегрет» убирает его, даже если модель не передала id</td></tr>
+      <tr><td>Назвала сумму 850 ₽ при фактических 188 ₽ — без вызова create_cart</td><td>живой eval</td>
+          <td>проверка <code>check_answer_total_matches_cart</code>: каждая названная сумма — только из события корзины</td></tr>
+      <tr><td>«Замени салат на винегрет» не считалось намерением удаления — старый салат оставался</td><td>живой eval</td>
+          <td>«замени/поменяй» в regex намерения удаления</td></tr>
+      <tr><td>На «сколько углеводов в корзине» складывала КБЖУ «на 100 г» (28 г вместо ~100 г)</td><td>живой eval</td>
+          <td>обёртка <code>get_product_details</code> считает <code>carbs_in_package_g</code> (КБЖУ × вес упаковки) — модель суммирует готовые числа; ответ «на 100 г» проверку не проходит</td></tr>
+      <tr><td>Вес упаковки обрезался до числа — 0.39 кг парсилось как 0.39 г</td><td>живой eval</td>
+          <td>обёртка отдаёт вес с единицей и предвычисляет <code>weight_g</code></td></tr>
     </table>
     <p class="sub" style="font-size:.95rem">Eval нашёл ошибки логики на старте, живое
-    использование — сбои модели, которые промптом не чинятся (проверено): каждая закрыта
-    гарантией в коде и оффлайн-тестом.</p>  </section>
+    использование и живые прогоны доработки — сбои модели, которые промптом не чинятся
+    (проверено): каждая закрыта гарантией в коде и оффлайн-тестом.</p>  </section>
 
-  <!-- 9. Репозиторий -->
+  <!-- 10. Репозиторий -->
   <section class="slide">
     <div class="kicker">Воспроизводимость</div>
     <h2>Репозиторий</h2>
