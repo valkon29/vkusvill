@@ -254,6 +254,42 @@ async def test_cart_question_no_forced_retry(recorder, fake_mcp):
     assert "Оформляю корзину" not in text
 
 
+async def test_link_promise_with_empty_cart_forces_retry(recorder, fake_mcp):
+    """Модель перечислила товары с суммой и пообещала ссылку, не вызвав
+    create_cart, при ПУСТОЙ корзине — детерминированно пересобирать нечего,
+    но молча закончить ход нельзя (найдено живым прогоном eval)."""
+    agent = make_agent(
+        [
+            [FakeChunk(content=(
+                "Предлагаю добавить в корзину:\n1. Сырники - 306 руб.\n"
+                "Итого: 306 рублей.\nСсылка на корзину ВкусВилла появится "
+                "под сообщением."
+            ))],
+            [FakeChunk(tool_calls=[FakeTC(0, "call_1", "create_cart",
+                                         '{"products": [{"id": 114976, "quantity": 1}]}')])],
+            [FakeChunk(content="Готово: корзина собрана.")],
+        ],
+        fake_mcp,
+    )
+    await agent.run([{"role": "user", "content": "подбери завтрак и собери корзину"}],
+                    recorder)
+
+    # поправка сработала — create_cart реально вызван
+    cart_calls = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+    assert len(cart_calls) == 1
+    text = "".join(d["text"] for t, d in recorder.events if t == "token")
+    assert "Оформляю корзину" in text
+
+
+def test_link_promise_negation_not_a_promise():
+    # «ссылка НЕ появится» — отказ, а не обещание
+    from app.agent import _CART_LINK_RE
+
+    assert not _CART_LINK_RE.search(
+        "Корзина пуста, ссылка на корзину не появится под сообщением."
+    )
+
+
 async def test_sequential_create_cart_calls_accumulate(recorder, fake_mcp):
     # модель дважды вызвала create_cart за один ход — второй вызов обязан
     # объединиться с результатом первого, а не затереть его
