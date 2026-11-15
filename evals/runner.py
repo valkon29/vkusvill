@@ -13,6 +13,7 @@ LLM и MCP — кроме кейсов с подменённым MCP. Резул
 import argparse
 import asyncio
 import datetime
+import json
 import sys
 
 from app.agent import Agent
@@ -112,9 +113,12 @@ def _last_answer(recorder: Recorder) -> str:
     return "".join(tokens).strip()
 
 
-def _render_events(events: list[tuple[str, dict]]) -> list[str]:
+def _render_events(events: list[tuple[str, dict]], clip: int | None = 500) -> list[str]:
     """Человекочитаемая трассировка хода: сохраняет порядок «модель сказала →
-    вызвала инструмент с параметрами → ВкусВилл вернул → корзина»."""
+    вызвала инструмент с параметрами → ВкусВилл вернул → корзина».
+
+    clip=None — полные ответы ВкусВилла (для разбора примера), иначе превью
+    в clip символов (для eval-отчёта по всем кейсам)."""
     lines: list[str] = []
     text_buf: list[str] = []
 
@@ -127,6 +131,18 @@ def _render_events(events: list[tuple[str, dict]]) -> list[str]:
             lines.append("")
             text_buf.clear()
 
+    def render_result(result: str) -> None:
+        try:  # полный ответ — аккуратным JSON-блоком
+            pretty = json.dumps(json.loads(result), ensure_ascii=False, indent=2)
+        except Exception:  # noqa: BLE001 — не JSON, показываем как есть
+            pretty = result
+        if clip is not None and len(pretty) > clip:
+            lines.append(f"  - ВкусВилл вернул (сокращено): `{pretty.replace(chr(10), ' ')[:clip]}…`")
+        else:
+            lines.append("  - ВкусВилл вернул:")
+            lines.append("")
+            lines.extend(["  ```json"] + ["  " + ln for ln in pretty.splitlines()] + ["  ```"])
+
     for t, d in events:
         if t == "token":
             text_buf.append(d["text"])
@@ -135,10 +151,7 @@ def _render_events(events: list[tuple[str, dict]]) -> list[str]:
             args = d.get("args", "")
             lines.append(f"- `{d['name']}` — параметры: `{args or '{}'}`")
         elif t == "tool_result":
-            preview = str(d["result"]).replace("\n", " ")
-            if len(preview) > 500:
-                preview = preview[:500] + "…"
-            lines.append(f"  - ВкусВилл вернул: `{preview}`")
+            render_result(str(d["result"]))
         elif t == "products":
             names = "; ".join((i.get("name") or "?") for i in d.get("items", []))
             lines.append(f"  - в чат показаны карточки: {names}")
@@ -157,7 +170,8 @@ def _render_events(events: list[tuple[str, dict]]) -> list[str]:
     return lines
 
 
-def _render_case(case: EvalCase, failures: list[str], events) -> list[str]:
+def _render_case(case: EvalCase, failures: list[str], events,
+                 clip: int | None = 500) -> list[str]:
     lines = [
         f"## {case.name} — {'✅ PASS' if not failures else '❌ FAIL'}",
         "",
@@ -170,7 +184,7 @@ def _render_case(case: EvalCase, failures: list[str], events) -> list[str]:
         prompt = turn[0][1].get("prompt", "")
         lines += [f"### Ход {idx} — пользователь: «{prompt}»", ""]
         body = turn[1:]
-        lines += _render_events(body) or ["_(нет событий)_"]
+        lines += _render_events(body, clip=clip) or ["_(нет событий)_"]
         lines.append("")
     return lines
 
@@ -274,7 +288,9 @@ def _write_showcase_docs(results) -> None:
             continue
         status = "✅ Все проверки пройдены" if not failures else "❌ Есть нарушения"
         lines = [_SHOWCASE_INTRO, f"**Прогон:** {status}", ""]
-        lines += _render_case(case, failures, recorder.events)
+        # полные ответы ВкусВилла — это разбор «что именно вернул MCP»,
+        # сокращения только в eval-отчёте по всем кейсам
+        lines += _render_case(case, failures, recorder.events, clip=None)
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         print(f"Разбор примера: {path}")
