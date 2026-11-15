@@ -21,6 +21,28 @@ logger = logging.getLogger(__name__)
 
 _SEARCH_FIELDS = ["id", "name", "price", "unit", "rating", "url", "images"]
 
+# «углеводы: 4,7» из строки КБЖУ и вес упаковки в граммах — для предвычисления
+# углеводов на упаковку (модель на живых прогонах упорно складывала «на 100 г»,
+# не учитывая вес; арифметику делаем в коде, модели остаётся просуммировать)
+_CARBS_RE = re.compile(r"углевод[а-яё]*\D{0,15}?(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+_WEIGHT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:г|гр|мл)\b", re.IGNORECASE)
+
+
+def _weight_grams(weight) -> float | None:
+    """Вес упаковки в граммах (кг/л → ×1000); None — если не разобран."""
+    if isinstance(weight, dict):
+        value, unit = weight.get("value"), (weight.get("unit") or "").lower()
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value) * 1000 if unit in ("кг", "л") else float(value)
+        return None
+    if isinstance(weight, (int, float)) and weight > 0:
+        return float(weight)
+    if isinstance(weight, str):
+        m = _WEIGHT_RE.search(weight)
+        if m:
+            return float(m.group(1).replace(",", "."))
+    return None
+
 # id аллергенов для vkusvill_recipes; заполняется лениво из ответа сервера
 _allergen_ids: dict[str, int] = {}
 
@@ -131,12 +153,24 @@ async def get_product_details(args: dict, mcp: MCPClientManager, emit: Emit) -> 
         "brand": _clean(d.get("brand")),
         "price": (d.get("price") or {}).get("current"),
         "unit": d.get("unit"),
-        "weight": (d.get("weight") or {}).get("value"),
+        "weight": d.get("weight"),
         "rating": round((d.get("rating") or {}).get("average") or 0, 1),
         "composition": properties.get("Состав"),
         "nutrition": properties.get("Пищевая и энергетическая ценность в 100 г"),
         "url": d.get("url"),
     }
+    # углеводы во всей упаковке: КБЖУ даётся на 100 г, вес — в кг/г;
+    # умножение делаем сами, чтобы модель не путала «на 100 г» с упаковкой
+    weight_g = _weight_grams(result["weight"])
+    if weight_g:
+        result["weight_g"] = round(weight_g, 1)
+        carbs = None
+        for text in (result["nutrition"], result["composition"]):
+            if text and (carbs := _CARBS_RE.search(text)):
+                break
+        if carbs:
+            per_100g = float(carbs.group(1).replace(",", "."))
+            result["carbs_in_package_g"] = round(per_100g * weight_g / 100.0, 1)
     return _clip(json.dumps(result, ensure_ascii=False))
 
 
@@ -312,10 +346,11 @@ def cart_names_from_history(messages: list[dict]) -> dict[int, str]:
 
 _WORD_RE = re.compile(r"[а-яёa-z0-9]+")
 
-# императивные формы: «ты удалил?» (вопрос) не должен считаться приказом
+# императивные формы: «ты удалил?» (вопрос) не должен считаться приказом;
+# «замени X на Y» — тоже удаление (X), найдено живым прогоном eval
 _REMOVAL_INTENT_RE = re.compile(
     r"\b(?:убери|уберите|удали|удалите|выкинь|выкиньте|исключи|исключите"
-    r"|избавься|избавь)\b"
+    r"|избавься|избавь|замени|замените|поменяй|поменяйте)\b"
     r"|не\s+(?:нужен|нужна|нужно|нужны)",
     re.IGNORECASE,
 )
