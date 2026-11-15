@@ -55,6 +55,14 @@ _CART_LINK_RE = re.compile(
     r"ссылк\w*\s+на\s+корзину[^\n]{0,40}(?<!не )появ",
     re.IGNORECASE,
 )
+# Прямой запрос корзины от пользователя («собери корзину», «положи в корзину») —
+# повелительное наклонение; вопросы о состоянии («что в корзине?») не считаются
+_CART_REQUEST_RE = re.compile(
+    r"(?:собер[иё]|собират\w*|оформи\w*|созда\w*|сдела\w*"
+    r"|полож[иь]|клад[иь]|добав[иь]|закаж[иь])\w{0,3}[^\n!?]{0,40}корзин"
+    r"|корзин\w*[^\n!?]{0,20}(?:собер[иё]|оформи\w*)",
+    re.IGNORECASE,
+)
 # Вопросительные зачины предложения: «Хотите, чтобы я собрал корзину?» —
 # это предложение модели, а не утверждение об изменении
 _QUESTION_START_RE = re.compile(
@@ -87,6 +95,105 @@ def _is_cart_claim(text: str) -> bool:
     return False
 
 
+# Псевдо-вызов инструмента текстом: модель иногда выдаёт tool call
+# как текст («[TOOL_CALL_START]create_cart {json}») вместо канала tool_calls —
+# найдено живым прогоном eval
+_PSEUDO_CALL_RE = re.compile(r"\[TOOL_CALL_START\]\s*(\w+)", re.IGNORECASE)
+
+
+def _balance_json(s: str) -> str:
+    """Дописывает недостающие закрывающие кавычки/скобки: модель иногда
+    обрезает JSON псевдо-вызова (найдено живым прогоном — не хватало
+    финальной «}»). Хвост после сбалансированной части игнорируется."""
+    stack: list[str] = []
+    in_str = False
+    escape = False
+    for ch in s:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+    if in_str:
+        s += '"'
+    return s + "".join(reversed(stack))
+
+
+def _first_json_object(s: str) -> dict | None:
+    """Первый JSON-объект в строке, или None.
+
+    Объект может обрезаться (модель не дописала скобки) и за ним может идти
+    посторонний текст. Сканируем до первой сбалансированной `}`; если до неё
+    встретился символ, невозможный в JSON вне строк (кириллица) — объект
+    обрезан: берём кусок до него и дописываем скобки по стеку.
+    """
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    cut: int | None = None
+    for i, ch in enumerate(s[start:], start):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                cut = i + 1
+                break
+        elif not (ch.isascii() and (ch.isalnum() or ch in ":,-+ \t\r\n")):
+            cut = i  # посторонний текст — JSON оборвался раньше
+            break
+    if cut is None:
+        cut = len(s)
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(_balance_json(s[start:cut]))
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _extract_pseudo_call(text: str, tool: str) -> str | None:
+    """Аргументы псевдо-вызова инструмента из текста ответа, или None.
+
+    Модель пишет «[TOOL_CALL_START]create_cart {"products": …}» текстом —
+    аргументы при этом корректны (или обрезаны — восстанавливаются
+    балансировкой скобок), вызов можно выполнить детерминированно.
+    Конец псевдо-вызова — следующий маркер.
+    """
+    for m in _PSEUDO_CALL_RE.finditer(text):
+        if m.group(1).lower() != tool:
+            continue
+        rest = text[m.end():]
+        stop = rest.find("[TOOL_CALL")
+        if stop != -1:
+            rest = rest[:stop]
+        obj = _first_json_object(rest)
+        if obj is not None:
+            return json.dumps(obj, ensure_ascii=False)
+    return None
+
+
 # Принудительная поправка, когда модель объявила изменение корзины или
 # пообещала ссылку, не вызвав create_cart
 _CART_FORCED_NUDGE = (
@@ -100,6 +207,18 @@ _CART_FORCED_NUDGE = (
     "нет — сначала вызови search_products. Если корзина пуста, а ты только что "
     "предлагал товары — собери корзину из них и вызови create_cart. Если и "
     "предложений нет — честно скажи, что корзина ещё не собрана, и предложи товары."
+)
+
+# Поправка, когда пользователь ПРЯМО попросил собрать корзину, а модель
+# переспросила («Собираем корзину?») или закончила ход без create_cart
+_CART_REQUEST_NUDGE = (
+    "СИСТЕМНОЕ СООБЩЕНИЕ: пользователь прямым текстом просил собрать корзину — "
+    "уточняющий вопрос не нужен, просьбу нужно выполнить. Вызови create_cart "
+    "сейчас: передай товары, которые ты предлагал в ответе (по 1 шт., если "
+    "количества не оговаривались), плюс позиции текущей корзины из раздела "
+    "контекста. НИКОГДА не передавай id, которых нет в контексте или в "
+    "результатах инструментов. Если подходящих товаров в ответе не было — "
+    "сначала вызови search_products и собери корзину из них."
 )
 
 
@@ -206,6 +325,28 @@ class Agent:
                 text = "".join(content_parts)
                 # Гарантия: обещание корзины без вызова create_cart не проходит
                 if text and "create_cart" not in used_tools:
+                    # Гарантия: псевдо-вызов create_cart текстом выполняется
+                    # напрямую — аргументы модель уже написала
+                    pseudo_args = _extract_pseudo_call(text, "create_cart")
+                    if pseudo_args is not None:
+                        logger.info(
+                            "Модель выдала create_cart текстом — выполняю напрямую"
+                        )
+                        await emit(
+                            "tool",
+                            {"name": "create_cart",
+                             "label": TOOL_LABELS.get("create_cart", "create_cart"),
+                             "args": pseudo_args},
+                        )
+                        result, cart = await self._execute(
+                            "create_cart", pseudo_args, emit, cart, names, user_msg
+                        )
+                        await emit(
+                            "tool_result", {"name": "create_cart", "result": result}
+                        )
+                        if not result.startswith("TOOL_ERROR"):
+                            return
+                        # не выполнилось (невалидные id и т.п.) — идём к поправкам
                     if _is_cart_claim(text):
                         logger.info(
                             "Модель объявила изменение корзины без create_cart — "
@@ -231,7 +372,13 @@ class Agent:
                             await emit(
                                 "tool",
                                 {"name": "create_cart",
-                                 "label": TOOL_LABELS.get("create_cart", "create_cart")},
+                                 "label": TOOL_LABELS.get("create_cart", "create_cart"),
+                                 "args": json.dumps(
+                                     {"products": [
+                                         {"id": c["id"], "quantity": c["quantity"]}
+                                         for c in rebuild
+                                     ]}, ensure_ascii=False
+                                 )},
                             )
                             result, _ = await self._execute(
                                 "create_cart",
@@ -258,6 +405,18 @@ class Agent:
                         await emit("token", {"text": "\n\n_Оформляю корзину…_"})
                         convo.append({"role": "assistant", "content": text})
                         convo.append({"role": "user", "content": _CART_FORCED_NUDGE})
+                        continue
+                    # Гарантия: прямой запрос корзины не заканчивается
+                    # переспросом — найдено живым прогоном (модель отвечала
+                    # «Собираем корзину?» на «…и собери корзину»)
+                    if _CART_REQUEST_RE.search(user_msg):
+                        logger.info(
+                            "Пользователь просил корзину, create_cart не вызван — "
+                            "принудительный запрос вызова"
+                        )
+                        await emit("token", {"text": "\n\n_Оформляю корзину…_"})
+                        convo.append({"role": "assistant", "content": text})
+                        convo.append({"role": "user", "content": _CART_REQUEST_NUDGE})
                         continue
                 return  # финальный ответ — только текст
 

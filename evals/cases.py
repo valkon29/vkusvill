@@ -109,6 +109,12 @@ def check_search_before_recommendation(events, messages):
     return errors
 
 
+check_search_before_recommendation.description = (
+    "все id товаров корзины — из результатов search_products / "
+    "find_product_analogs (анти-галлюцинации)"
+)
+
+
 def check_cart_url(events, messages):
     errors = []
     for cart in cart_events(events):
@@ -117,10 +123,19 @@ def check_cart_url(events, messages):
     return errors
 
 
+check_cart_url.description = "ссылка каждой корзины ведёт на vkusvill.ru"
+
+
 def check_cart_present(events, messages):
     """Корзина обязана быть собрана — иначе остальные проверки корзины
     пройдут впустую (цикл по пустому списку)."""
     return [] if cart_events(events) else ["корзина не собрана (событие cart отсутствует)"]
+
+
+check_cart_present.description = (
+    "корзина собрана (событие cart есть) — без неё проверки корзины "
+    "не имеют смысла"
+)
 
 
 def check_budget(limit):
@@ -133,6 +148,7 @@ def check_budget(limit):
             if (cart.get("total") or 0) > limit:
                 errors.append(f"сумма корзины {cart['total']} ₽ превышает бюджет {limit} ₽")
         return errors
+    check.description = f"сумма каждой собранной корзины ≤ {limit} ₽; без корзины — нарушение"
     return check
 
 
@@ -169,17 +185,26 @@ def check_composition_excludes(substr):
                     errors.append(f"товар «{item.get('name')}» содержит «{substr}», "
                                   f"хотя это запрещено по условию")
         return errors
+    check.description = (
+        f"ни один товар корзины не содержит «{substr}» в составе; состав каждого "
+        f"товара проверен через get_product_details; «без {substr}» / «не содержит "
+        f"{substr}» — подходит"
+    )
     return check
 
 
 def check_tool_called(tool):
     def check(events, messages):
         return [] if tool in tool_names(events) else [f"инструмент {tool} не вызывался"]
+    check.description = f"инструмент {tool} вызывался"
     return check
 
 
 def check_answer_nonempty(events, messages):
     return [] if final_answer(events) else ["пустой финальный ответ"]
+
+
+check_answer_nonempty.description = "финальный ответ не пуст"
 
 
 def check_cart_min_items(n):
@@ -191,6 +216,7 @@ def check_cart_min_items(n):
         return [] if count >= n else [
             f"в корзине {count} позиций — для «полноценного обеда» ожидалось не менее {n}"
         ]
+    check.description = f"в финальной корзине не менее {n} позиций"
     return check
 
 
@@ -229,6 +255,10 @@ def check_replacement(turn_no, removed_sub, added_sub):
                 errors.append(f"позиция «{name}» (id={pid}) пропала из корзины "
                               f"без запроса пользователя")
         return errors
+    check.description = (
+        f"ход {turn_no}: «{added_sub}» появился в корзине, «{removed_sub}» исчез "
+        f"(если был), остальные позиции хода {turn_no - 1} сохранились"
+    )
     return check
 
 
@@ -326,6 +356,11 @@ def check_carbs_total(tolerance: float = 0.3):
                           f"с пересчётом из КБЖУ: ожидалось {expected}, "
                           f"числа в ответе: {found}")
         return errors
+    check.description = (
+        f"по каждой позиции последней корзины запрошен свежий get_product_details; "
+        f"суммарные углеводы в ответе сходятся с пересчётом (углеводы/100 г × вес "
+        f"упаковки × количество, допуск ±{int(tolerance * 100)}%)"
+    )
     return check
 
 
@@ -333,6 +368,11 @@ def check_no_cart_when_empty_result(events, messages):
     """На заведомо несуществующий товар не должно быть корзины."""
     return ([] if not cart_events(events)
             else ["собрана корзина на несуществующий товар"])
+
+
+check_no_cart_when_empty_result.description = (
+    "на несуществующий товар корзина не собирается"
+)
 
 
 def check_graceful_failure(events, messages):
@@ -347,6 +387,11 @@ def check_graceful_failure(events, messages):
     )):
         errors.append(f"ответ не признаёт проблему: {final_answer(events)[:200]!r}")
     return errors
+
+
+check_graceful_failure.description = (
+    "при недоступном MCP: без исключений, ответ есть, проблема признана"
+)
 
 
 # «итого 854 ₽» / «Сумма корзины: 850 рублей» / «всего вышло 812.50 руб»
@@ -380,6 +425,12 @@ def check_answer_total_matches_cart(events, messages):
     return errors
 
 
+check_answer_total_matches_cart.description = (
+    "каждая названная в ответе сумма сходится с фактической суммой корзины "
+    "из события cart (±5%); сумма без вызова create_cart — нарушение"
+)
+
+
 def check_details_before_cart_when_dietary(events, messages):
     """При пищевом ограничении состав проверяется до сборки корзины:
     в каждом ходе с create_cart первый get_product_details был раньше."""
@@ -396,7 +447,26 @@ def check_details_before_cart_when_dietary(events, messages):
     return errors
 
 
+check_details_before_cart_when_dietary.description = (
+    "в каждом ходе с create_cart составы уже проверены: первый "
+    "get_product_details раньше первого create_cart"
+)
+
+
 # ---------- кейсы ----------
+
+def check_clarification(events, messages):
+    """На размытый запрос — уточняющий вопрос или конкретное предложение."""
+    return [] if ("?" in final_answer(events)
+                  or any(t in ("products", "cart") for t, _ in events)
+                  ) else ["нет ни уточняющего вопроса, ни предложения товаров"]
+
+
+check_clarification.description = (
+    "на размытый запрос («хочу поесть») — уточняющий вопрос "
+    "или подборка товаров"
+)
+
 
 CASES = [
     EvalCase(
@@ -484,9 +554,7 @@ CASES = [
         prompts=["Хочу поесть"],
         checks=[
             check_answer_nonempty,
-            lambda events, messages: []
-            if ("?" in final_answer(events) or any(t in ("products", "cart") for t, _ in events))
-            else ["нет ни уточняющего вопроса, ни предложения товаров"],
+            check_clarification,
         ],
     ),
 ]

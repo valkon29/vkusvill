@@ -178,6 +178,16 @@ def _render_case(case: EvalCase, failures: list[str], events,
         f"_{case.description}_",
         "",
     ]
+    descs = [getattr(c, "description", None) for c in case.checks]
+    if any(descs):
+        lines += [
+            "Проверки кейса:",
+            *[
+                f"- {d}" if d else f"- _{getattr(c, '__name__', 'check')} — без описания_"
+                for c, d in zip(case.checks, descs)
+            ],
+            "",
+        ]
     if failures:
         lines += ["Нарушения:", *[f"- **{f}**" for f in failures], ""]
     for idx, turn in enumerate(_split_turns(events), start=1):

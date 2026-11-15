@@ -290,6 +290,122 @@ def test_link_promise_negation_not_a_promise():
     )
 
 
+def test_cart_request_regex():
+    # прямой запрос корзины — повелительное наклонение
+    from app.agent import _CART_REQUEST_RE
+
+    assert _CART_REQUEST_RE.search("Подбери мне завтрак без лактозы и собери корзину")
+    assert _CART_REQUEST_RE.search("Собери полноценный обед. Сразу собери корзину.")
+    assert _CART_REQUEST_RE.search("положи сырники в корзину")
+    assert _CART_REQUEST_RE.search("оформи корзину из этого рецепта")
+    # вопросы о состоянии корзины — не запрос сборки
+    assert not _CART_REQUEST_RE.search("что в корзине?")
+    assert not _CART_REQUEST_RE.search("покажи ссылку на корзину")
+    assert not _CART_REQUEST_RE.search("сколько стоит корзина?")
+    # «убери из корзины» — удаление, не сборка (у модели свой путь удаления)
+    assert not _CART_REQUEST_RE.search("убери печенье из корзины")
+
+
+async def test_explicit_cart_request_forces_retry(recorder, fake_mcp):
+    """Пользователь прямо просит «собери корзину», а модель переспрашивает
+    «Собираем корзину?» и заканчивает ход — поправка обязана привести
+    к вызову create_cart (найдено живым прогоном eval)."""
+    agent = make_agent(
+        [
+            [FakeChunk(content=(
+                "Предлагаю геркулес «Овсяные хлопья» — без лактозы, 54 рубля. "
+                "Собираем корзину?"
+            ))],
+            [FakeChunk(tool_calls=[FakeTC(0, "call_1", "create_cart",
+                                         '{"products": [{"id": 1248, "quantity": 1}]}')])],
+            [FakeChunk(content="Готово: корзина собрана.")],
+        ],
+        fake_mcp,
+    )
+    await agent.run(
+        [{"role": "user", "content": "Подбери завтрак без лактозы и собери корзину"}],
+        recorder,
+    )
+
+    cart_calls = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+    assert len(cart_calls) == 1
+    text = "".join(d["text"] for t, d in recorder.events if t == "token")
+    assert "Оформляю корзину" in text
+
+
+def test_extract_pseudo_call():
+    from app.agent import _extract_pseudo_call
+
+    text = ('Итоговая сумма корзины: 119 рублей.\n'
+            '[TOOL_CALL_START]create_cart\n'
+            '{"products":[{"id":1248,"quantity":1},{"id":64315,"quantity":1}]}\n'
+            'Геркулес — 54 рубля.')
+    assert _extract_pseudo_call(text, "create_cart") == (
+        '{"products": [{"id": 1248, "quantity": 1}, {"id": 64315, "quantity": 1}]}'
+    )
+    # два псевдо-вызова подряд — берутся аргументы первого create_cart
+    two = ('[TOOL_CALL_START]create_cart {"products": [{"id": 1, "quantity": 1}]}\n'
+           '[TOOL_CALL_START]search_products {"query": "x"}')
+    assert _extract_pseudo_call(two, "create_cart") == \
+        '{"products": [{"id": 1, "quantity": 1}]}'
+    # чужой инструмент и битый JSON не срабатывают
+    assert _extract_pseudo_call(
+        '[TOOL_CALL_START]search_products {"query": "x"}', "create_cart") is None
+    assert _extract_pseudo_call(
+        '[TOOL_CALL_START]create_cart {broken', "create_cart") is None
+    assert _extract_pseudo_call("просто текст без маркеров", "create_cart") is None
+    # обрезанный JSON (нет финальной «}») + текст после — как в живом прогоне
+    truncated = ('[TOOL_CALL_START]create_cart\n'
+                 '{"products":[{"id":1248,"quantity":1},{"id":64315,"quantity":1}]\n\n'
+                 'Корзина собрана. Итоговая сумма: 119 рублей.')
+    assert _extract_pseudo_call(truncated, "create_cart") == (
+        '{"products": [{"id": 1248, "quantity": 1}, {"id": 64315, "quantity": 1}]}'
+    )
+    # скобка внутри строкового значения не сбивает балансировку
+    assert _extract_pseudo_call(
+        '[TOOL_CALL_START]create_cart {"products": [{"id": 1, "note": "a}b"}]}',
+        "create_cart") == '{"products": [{"id": 1, "note": "a}b"}]}'
+
+
+async def test_pseudo_call_in_text_executed_directly(recorder, fake_mcp):
+    """Модель выдала tool call ТЕКСТОМ («[TOOL_CALL_START]create_cart {json}»)
+    вместо канала tool_calls — аргументы корректны, агент обязан выполнить
+    вызов напрямую (найдено живым прогоном eval)."""
+    agent = make_agent(
+        [[FakeChunk(content=(
+            "Итоговая сумма корзины: 119 рублей. Ссылка на корзину ВкусВилла "
+            "появится под сообщением.\n\n"
+            "[TOOL_CALL_START]create_cart\n"
+            '{"products":[{"id":114976,"quantity":1}]}'
+        ))]],
+        fake_mcp,
+    )
+    await agent.run(
+        [{"role": "user", "content": "подбери завтрак без лактозы и собери корзину"}],
+        recorder,
+    )
+
+    # к LLM был только один запрос — вызов выполнен без второго захода
+    assert len(agent._llm.requests) == 1
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [{"id": 114976, "q": 1}]
+    # событие корзины ушло в UI
+    cart_events = [d for t, d in recorder.events if t == "cart"]
+    assert len(cart_events) == 1
+    assert cart_events[0]["total"] == 306
+
+
+async def test_cart_state_question_no_forced_retry(recorder, fake_mcp):
+    # вопрос о состоянии корзины — модель отвечает без вызова, без поправки
+    agent = make_agent(
+        [[FakeChunk(content="Сейчас в корзине печенье и суп. Итого 651 рубль.")]],
+        fake_mcp,
+    )
+    await agent.run([{"role": "user", "content": "что в корзине?"}], recorder)
+    assert len(agent._llm.requests) == 1
+    assert not [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"]
+
+
 async def test_sequential_create_cart_calls_accumulate(recorder, fake_mcp):
     # модель дважды вызвала create_cart за один ход — второй вызов обязан
     # объединиться с результатом первого, а не затереть его
