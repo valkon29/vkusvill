@@ -67,17 +67,20 @@ CART_RAW = json.dumps(
 
 
 class FakeMCP:
-    """Записывает вызовы и возвращает заготовленные ответы."""
+    """Записывает вызовы и возвращает заготовленные ответы.
+
+    details_raw можно переопределить в тесте (свой ответ vkusvill_product_details)."""
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
+        self.details_raw = DETAILS_RAW
 
     async def call_tool(self, name: str, arguments: dict) -> str:
         self.calls.append((name, arguments))
         if name == "vkusvill_products_search":
             return SEARCH_RAW
         if name == "vkusvill_product_details":
-            return DETAILS_RAW
+            return self.details_raw
         if name == "vkusvill_cart_link_create":
             return CART_RAW
         return json.dumps({"ok": True, "data": {"items": []}}, ensure_ascii=False)

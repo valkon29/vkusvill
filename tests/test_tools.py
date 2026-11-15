@@ -36,6 +36,34 @@ async def test_get_product_details(recorder, fake_mcp):
     assert data["price"] == 306
 
 
+async def test_get_product_details_precomputes_package_carbs(recorder, fake_mcp):
+    """Углеводы на упаковку считает обёртка (КБЖУ на 100 г × вес), а не LLM:
+    модель на живом прогоне упорно складывала значения «на 100 г»."""
+    fake_mcp.details_raw = json.dumps(
+        {
+            "ok": True,
+            "data": {
+                "id": 1,
+                "name": "Винегрет",
+                "price": {"current": 188},
+                "unit": "шт",
+                "weight": {"value": 0.18, "unit": "кг"},
+                "url": "https://vkusvill.ru/goods/vinegret/",
+                "properties": [
+                    {"name": "Состав", "value": "свекла, картофель"},
+                    {"name": "Пищевая и энергетическая ценность в 100 г",
+                     "value": "белки: 1,8 г, жиры: 4,1 г, углеводы: 10,2 г, 85 ккал"},
+                ],
+            },
+        },
+        ensure_ascii=False,
+    )
+    result = await tv.get_product_details({"product_id": 1}, fake_mcp, recorder)
+    data = json.loads(result)
+    assert data["weight_g"] == 180.0
+    assert data["carbs_in_package_g"] == 18.4  # 10.2 × 180 / 100
+
+
 async def test_create_cart_validates_and_dedupes(recorder, fake_mcp):
     result = await tv.create_cart(
         {
@@ -317,6 +345,31 @@ async def test_implicit_removal_by_omission(recorder, fake_mcp):
             "_current_cart": _CURRENT3,
             "_cart_names": _NAMES3,
             "_last_user_message": "убери из корзины винегрет",
+        },
+        fake_mcp,
+        recorder,
+    )
+    cart_call = [c for c in fake_mcp.calls if c[0] == "vkusvill_cart_link_create"][0]
+    assert cart_call[1]["products"] == [
+        {"id": 58289, "q": 1},
+        {"id": 60658, "q": 1},
+    ]
+
+
+async def test_implicit_removal_on_replace_wording(recorder, fake_mcp):
+    # «замени салат на суп» — тоже удаление салата; модель передала состав
+    # без салата (и с неверным id) — автосъём по названию должен сработать.
+    # Сбой найден живым прогоном eval: «замени» не распознавался как намерение
+    await tv.create_cart(
+        {
+            "products": [
+                {"id": 58289, "quantity": 1},
+                {"id": 60658, "quantity": 1},
+                {"id": 1, "quantity": 0},  # выдуманный id — игнорируется
+            ],
+            "_current_cart": _CURRENT3,
+            "_cart_names": _NAMES3,
+            "_last_user_message": "замени салат на суп",
         },
         fake_mcp,
         recorder,
